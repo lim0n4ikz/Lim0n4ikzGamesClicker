@@ -298,7 +298,7 @@ Lim0n4ikzGames Clicker:
 ### Клонирование репозитория
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/Lim0n4ikzGamesClicker.git
+git clone https://github.com/lim0n4ikz/Lim0n4ikzGamesClicker.git
 ```
 
 ### Переход в директорию
@@ -321,25 +321,47 @@ python Lim0n4ikzGamesClicker.py
 
 ---
 
-# 🔨 Сборка программы
+## 🔨 Способы сборки
 
-Установите PyInstaller:
+### Способ 1 (рекомендуемый, только Windows)
+
+Запустите файл `build_Lim0n4ikzGamesClicker.bat` из папки проекта (двойным щелчком или через командную строку):
+
+```cmd
+build_Lim0n4ikzGamesClicker.bat
+```
+
+### Способ 2 (ручной, любая ОС)
+
+Убедитесь, что установлен **PyInstaller**:
 
 ```bash
 pip install pyinstaller
 ```
 
-После этого выполните:
+Затем выполните в корневой папке проекта:
 
 ```bash
 pyinstaller Lim0n4ikzGamesClicker.spec
 ```
 
-Готовая программа появится в:
+### 📦 Результат сборки
 
-```text
-dist/
+Готовый файл появится в папке `dist/`:
+
+* **Windows:** `dist/Lim0n4ikzGamesClicker.exe`
+* **Другие ОС:** соответствующий исполняемый файл (если поддерживается).
+
+### 📝 Примечания
+
+* Все файлы (особенно `lim0n4ikzgames.ico`) должны лежать в одной папке с `Lim0n4ikzGamesClicker.spec`.
+* При возникновении ошибок обновите **PyInstaller**:
+
+```bash
+pip install --upgrade pyinstaller
 ```
+
+* Если вы хотите заменить иконку, поместите свой `.ico` файл в корень проекта и укажите его имя в параметрах `icon` и `datas` внутри `Lim0n4ikzGamesClicker.spec`.
 
 ---
 
