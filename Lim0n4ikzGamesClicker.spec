@@ -1,12 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-
 a = Analysis(
     ['Lim0n4ikzGamesClicker.py'],
     pathex=[],
     binaries=[],
-    datas=[('lim0n4ikzgames.ico', '.')],
-    hiddenimports=['pynput.keyboard', 'pynput.mouse'],
+    datas=[('lim0n4ikzgames.ico', '.')],   # ← иконка будет скопирована в _MEIPASS
+    hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

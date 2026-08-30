@@ -14,11 +14,64 @@ if sys.platform == "win32":
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
     
 def resource_path(relative_path):
-    try:
+    """Return a path to a bundled resource both in source and PyInstaller builds."""
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
         base_path = sys._MEIPASS
-    except AttributeError:
-        base_path = os.path.abspath(".")
+    else:
+        base_path = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base_path, relative_path)
+
+
+def set_windows_icon(root, icon_path):
+    """Set the icon for the Tk window and Windows taskbar when possible."""
+    if sys.platform != "win32" or not os.path.isfile(icon_path):
+        return
+
+    # Tk's iconbitmap is the normal path and also works with a bundled .ico.
+    try:
+        root.iconbitmap(icon_path)
+        root.iconbitmap(default=icon_path)
+    except tk.TclError:
+        pass
+
+    # Also set the native Win32 small/large window icons. This helps Windows
+    # keep the same icon in the title bar and taskbar for a windowed build.
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        shell32 = ctypes.windll.shell32
+
+        hwnd = wintypes.HWND(root.winfo_id())
+        LR_LOADFROMFILE = 0x00000010
+        IMAGE_ICON = 1
+        LR_DEFAULTSIZE = 0x00000040
+        ICON_SMALL = 0
+        ICON_BIG = 1
+        WM_SETICON = 0x0080
+
+        hicon_big = user32.LoadImageW(
+            None, icon_path, IMAGE_ICON, 32, 32, LR_LOADFROMFILE
+        )
+        hicon_small = user32.LoadImageW(
+            None, icon_path, IMAGE_ICON, 16, 16, LR_LOADFROMFILE
+        )
+
+        if hicon_big:
+            user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, hicon_big)
+        if hicon_small:
+            user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, hicon_small)
+
+        # Keep the AppUserModelID consistent with the one set above.
+        try:
+            shell32.SetCurrentProcessExplicitAppUserModelID(
+                "Lim0n4ikzGamesClicker"
+            )
+        except Exception:
+            pass
+    except Exception:
+        pass
 
 class Lim0n4ikzGamesClicker:
     MODE_HOLD = "Зажатие клавиши"
@@ -34,8 +87,7 @@ class Lim0n4ikzGamesClicker:
         self.root.resizable(False, False)
 
         icon_path = resource_path("lim0n4ikzgames.ico")
-        if os.path.exists(icon_path):
-            self.root.iconbitmap(icon_path)
+        set_windows_icon(self.root, icon_path)
 
         self.clicking = False
         self.hotkeys_enabled = False
