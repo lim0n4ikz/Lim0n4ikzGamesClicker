@@ -250,7 +250,7 @@ Lim0n4ikzGames Clicker:
 
 **⬇️ Скачать Lim0n4ikzGames Clicker**
 
-> В будущем здесь будет размещена ссылка на актуальный релиз.
+> [**Releases**](https://github.com/lim0n4ikz/Lim0n4ikzGamesClicker/releases/tag/clicker)
 
 ---
 
