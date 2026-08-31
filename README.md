@@ -58,6 +58,12 @@
 
 ---
 
+## 🎥 Installation Guide
+
+▶️ [**Watch the installation guide on YouTube**](https://youtu.be/C8bmTCf-aZI)
+
+---
+
 # 🚀 Основные возможности
 
 ## ⌨️ 4 режима работы
