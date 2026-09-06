@@ -1,5 +1,21 @@
 # 🍋 Lim0n4ikzGames Clicker
 
+<p align="center">
+  <img src="lim0n4ikzgames.ico" width="100" alt="Lim0n4ikzGames Clicker">
+</p>
+
+<h3 align="center">
+  A Smart Tool for Automating Repetitive Actions
+</h3>
+
+<p align="center">
+  Keyboard and mouse automation for gaming, work, and everyday tasks.
+</p>
+
+<p align="center">
+  🇬🇧 <b>English</b> | <a href="README.ru.md">🇷🇺 Русский</a>
+</p>
+
 **Lim0n4ikzGames Clicker** is an automatic clicker for Windows with support for keyboard keys, mouse buttons, sequences, and key combinations.
 
 The application allows you to automate repetitive actions using customizable intervals, hotkeys, and profiles.
