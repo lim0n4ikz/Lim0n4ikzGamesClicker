@@ -413,7 +413,19 @@ It helps the project grow and shows that the application is useful to the commun
 
 ## 📄 License
 
-No license is specified in the source code. If you choose a license for the project, add it here.
+**Lim0n4ikzGames Clicker** is distributed under the **Lim0n4ikzGames Clicker Non-Commercial License**.
+
+You are free to:
+
+* use the software for personal purposes;
+* fork the repository;
+* publish the source code on GitHub;
+* modify the software for non-commercial purposes;
+* publish non-commercial forks and modifications.
+
+**Commercial use, selling, reselling, paid distribution, and inclusion in commercial projects are prohibited without prior written permission from the copyright holder.**
+
+See the [`LICENSE`](LICENSE.md) file for the complete terms.
 
 ---
 
