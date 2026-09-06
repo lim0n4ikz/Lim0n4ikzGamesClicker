@@ -1,0 +1,20 @@
+{
+    "settings_version": 3,
+    "window": {
+        "width": 1200,
+        "height": 780
+    },
+    "mode_idx": 0,
+    "min_int": 0.5,
+    "max_int": 1.0,
+    "hold_t": 1.0,
+    "btw_t": 0.2,
+    "seq_raw": "",
+    "random_i": true,
+    "lang": "ru",
+    "start_hotkey": "F6",
+    "stop_hotkey": "F7",
+    "click_key": "SPACE",
+    "click_key_type": "keyboard",
+    "hotkeys_enabled": true
+}
