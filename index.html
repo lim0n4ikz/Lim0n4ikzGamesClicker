@@ -1,0 +1,793 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lim0n4ikzGames Clicker</title>
+    <link rel="icon" href="lim0n4ikzgames.ico">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,400..700;1,14..32,400..700&display=swap" rel="stylesheet">
+
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg: #090f16;
+            --panel: rgba(17, 28, 36, 0.84);
+            --panel-soft: rgba(255, 255, 255, 0.045);
+            --text: #f4f7f2;
+            --muted: #9aadb0;
+            --accent: #d7f36a;
+            --accent-2: #54d4c4;
+            --line: rgba(215, 243, 106, 0.16);
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            padding: 28px 20px;
+            background-image:
+                linear-gradient(rgba(255,255,255,0.025) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255,255,255,0.025) 1px, transparent 1px),
+                radial-gradient(circle at 12% 8%, rgba(215, 243, 106, 0.13), transparent 28%),
+                radial-gradient(circle at 90% 80%, rgba(84, 212, 196, 0.12), transparent 30%);
+            background-size: 42px 42px, 42px 42px, auto, auto;
+        }
+
+        .card {
+            max-width: 760px;
+            width: 100%;
+            margin: 0 auto;
+            background: var(--panel);
+            backdrop-filter: blur(24px);
+            -webkit-backdrop-filter: blur(24px);
+            border-radius: 30px;
+            padding: 42px 38px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow:
+                0 30px 80px rgba(0, 0, 0, 0.5),
+                0 0 0 1px rgba(215, 243, 106, 0.04) inset;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .card::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(
+                circle at 30% 40%,
+                rgba(215, 243, 106, 0.045),
+                transparent 60%
+            );
+            pointer-events: none;
+        }
+
+        .topbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 25px;
+            position: relative;
+            z-index: 2;
+        }
+
+        .brand {
+            color: #8b9bb5;
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+
+        .brand strong {
+            color: #e8edf5;
+        }
+
+        .lang-toggle {
+            display: flex;
+            gap: 8px;
+        }
+
+        .lang-toggle button {
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            color: #8b9bb5;
+            font-size: 0.8rem;
+            font-weight: 600;
+            padding: 6px 14px;
+            border-radius: 40px;
+            cursor: pointer;
+            transition: all 0.25s ease;
+            font-family: inherit;
+        }
+
+        .lang-toggle button.active {
+            background: linear-gradient(135deg, #7c5cfc, #5b7cfa);
+            color: #fff;
+            border-color: transparent;
+            box-shadow: 0 4px 16px rgba(124, 92, 252, 0.3);
+        }
+
+        .hero {
+            position: relative;
+            z-index: 2;
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            margin-bottom: 22px;
+        }
+
+        .logo {
+            width: 96px;
+            height: 96px;
+            border-radius: 28px;
+            object-fit: cover;
+            border: 3px solid rgba(124, 92, 252, 0.4);
+            box-shadow: 0 12px 28px rgba(0, 0, 0, 0.5);
+            background: #1f2535;
+            flex-shrink: 0;
+        }
+
+        .hero h1 {
+            font-size: 2.2rem;
+            font-weight: 700;
+            letter-spacing: -0.7px;
+            background: linear-gradient(135deg, #f0f4ff, #c4b5fd);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            line-height: 1.2;
+            margin-bottom: 7px;
+        }
+
+        .badge {
+            display: inline-block;
+            font-size: 0.85rem;
+            font-weight: 500;
+            background: rgba(124, 92, 252, 0.12);
+            color: #c4b5fd;
+            padding: 4px 15px;
+            border-radius: 40px;
+            border: 1px solid rgba(124, 92, 252, 0.1);
+        }
+
+        .description {
+            position: relative;
+            z-index: 2;
+            font-size: 1rem;
+            line-height: 1.75;
+            color: #cdd9ec;
+            margin-bottom: 24px;
+        }
+
+        .description strong {
+            color: #e8edf5;
+        }
+
+        .meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px 25px;
+            font-size: 0.85rem;
+            color: #8b9bb5;
+            position: relative;
+            z-index: 2;
+            margin-bottom: 28px;
+            padding-bottom: 24px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .meta span {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .section-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: #e8edf5;
+            margin-bottom: 16px;
+            letter-spacing: -0.3px;
+            position: relative;
+            z-index: 2;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .section-title::after {
+            content: '';
+            flex: 1;
+            height: 1px;
+            background: linear-gradient(90deg, rgba(255,255,255,0.06), transparent);
+        }
+
+        .modes-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 12px;
+            position: relative;
+            z-index: 2;
+            margin-bottom: 30px;
+        }
+
+        .mode-item,
+        .feature-item,
+        .preset-item,
+        .contact-item {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 16px;
+            transition: all 0.25s ease;
+        }
+
+        .mode-item {
+            padding: 16px 18px;
+        }
+
+        .mode-item:hover,
+        .feature-item:hover,
+        .preset-item:hover,
+        .contact-item:hover {
+            background: rgba(255, 255, 255, 0.06);
+            border-color: rgba(124, 92, 252, 0.22);
+            transform: translateY(-2px);
+        }
+
+        .mode-item .icon,
+        .feature-item .icon {
+            font-size: 1.5rem;
+            display: block;
+            margin-bottom: 6px;
+        }
+
+        .mode-item h3,
+        .feature-item h3 {
+            font-size: 0.95rem;
+            font-weight: 600;
+            color: #e8edf5;
+        }
+
+        .mode-item p,
+        .feature-item p {
+            font-size: 0.8rem;
+            color: #8b9bb5;
+            line-height: 1.45;
+            margin-top: 3px;
+        }
+
+        .mode-item code {
+            display: inline-block;
+            margin-top: 10px;
+            color: #a99cff;
+            background: rgba(124, 92, 252, 0.08);
+            border: 1px solid rgba(124, 92, 252, 0.1);
+            padding: 3px 8px;
+            border-radius: 7px;
+            font-size: 0.7rem;
+        }
+
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 12px;
+            position: relative;
+            z-index: 2;
+            margin-bottom: 30px;
+        }
+
+        .feature-item {
+            padding: 14px 18px;
+        }
+
+        .presets {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            position: relative;
+            z-index: 2;
+            margin-bottom: 30px;
+        }
+
+        .preset-item {
+            padding: 14px 18px;
+            display: grid;
+            grid-template-columns: 1fr auto auto;
+            align-items: center;
+            gap: 14px;
+        }
+
+        .preset-name {
+            color: #e8edf5;
+            font-size: 0.9rem;
+            font-weight: 600;
+        }
+
+        .preset-time {
+            color: #8b9bb5;
+            font-size: 0.8rem;
+        }
+
+        .preset-key {
+            color: #c4b5fd;
+            background: rgba(124, 92, 252, 0.08);
+            border: 1px solid rgba(124, 92, 252, 0.1);
+            border-radius: 40px;
+            padding: 3px 10px;
+            font-size: 0.72rem;
+            font-weight: 600;
+        }
+
+        .download {
+            position: relative;
+            z-index: 2;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+            padding: 22px;
+            margin-bottom: 30px;
+            border-radius: 20px;
+            background:
+                linear-gradient(135deg, rgba(124, 92, 252, 0.12), rgba(91, 124, 250, 0.05)),
+                rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(124, 92, 252, 0.16);
+        }
+
+        .download h3 {
+            font-size: 1.15rem;
+            margin-bottom: 5px;
+        }
+
+        .download p {
+            color: #8b9bb5;
+            font-size: 0.82rem;
+            margin-bottom: 15px;
+        }
+
+        .button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 10px 22px;
+            border-radius: 40px;
+            background: linear-gradient(135deg, #7c5cfc, #5b7cfa);
+            color: #fff;
+            font-size: 0.85rem;
+            font-weight: 700;
+            border: 0;
+            box-shadow: 0 8px 22px rgba(124, 92, 252, 0.25);
+            transition: all 0.25s ease;
+        }
+
+        .button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 12px 28px rgba(124, 92, 252, 0.35);
+        }
+
+        .secondary-button {
+            margin-top: 9px;
+            color: #9aaec9;
+            font-size: 0.78rem;
+        }
+
+        .secondary-button:hover {
+            color: #c4b5fd;
+        }
+
+        .contacts-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: #e8edf5;
+            margin-bottom: 14px;
+            position: relative;
+            z-index: 2;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .contacts-title::after {
+            content: '';
+            flex: 1;
+            height: 1px;
+            background: linear-gradient(90deg, rgba(255,255,255,0.06), transparent);
+        }
+
+        .contacts-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            position: relative;
+            z-index: 2;
+        }
+
+        .contact-item {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            padding: 14px 18px;
+            color: #e8edf5;
+            text-decoration: none;
+        }
+
+        .contact-icon {
+            width: 32px;
+            text-align: center;
+            font-size: 1.3rem;
+        }
+
+        .contact-name {
+            flex: 1;
+            font-weight: 500;
+            font-size: 0.95rem;
+        }
+
+        .contact-value {
+            color: #9aaec9;
+            font-size: 0.85rem;
+        }
+
+        .note {
+            margin-top: 14px;
+            padding: 12px 16px;
+            background: rgba(255, 255, 255, 0.02);
+            border-radius: 14px;
+            font-size: 0.8rem;
+            color: #6a7d9b;
+            border: 1px dashed rgba(255, 255, 255, 0.04);
+            text-align: center;
+            position: relative;
+            z-index: 2;
+        }
+
+        .warning {
+            margin-top: 10px;
+            margin-bottom: 30px;
+            padding: 12px 16px;
+            background: rgba(250, 204, 21, 0.04);
+            border: 1px solid rgba(250, 204, 21, 0.08);
+            border-radius: 14px;
+            color: #9d936c;
+            font-size: 0.78rem;
+            line-height: 1.5;
+            position: relative;
+            z-index: 2;
+        }
+
+        .lang-ru, .lang-en {
+            display: none;
+        }
+
+        .lang-ru.active, .lang-en.active {
+            display: block;
+        }
+
+        .fade-in {
+            opacity: 0;
+            animation: fadeUp 0.5s ease forwards;
+        }
+
+        @keyframes fadeUp {
+            0% {
+                opacity: 0;
+                transform: translateY(16px);
+            }
+            100% {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .delay-1 { animation-delay: 0.1s; }
+        .delay-2 { animation-delay: 0.2s; }
+        .delay-3 { animation-delay: 0.3s; }
+        .delay-4 { animation-delay: 0.4s; }
+        .delay-5 { animation-delay: 0.5s; }
+        .delay-6 { animation-delay: 0.6s; }
+
+        @media (max-width: 600px) {
+            body {
+                padding: 10px;
+            }
+
+            .card {
+                padding: 28px 18px;
+                border-radius: 28px;
+            }
+
+            .topbar {
+                align-items: flex-start;
+            }
+
+            .hero {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+
+            .logo {
+                width: 76px;
+                height: 76px;
+            }
+
+            .hero h1 {
+                font-size: 1.8rem;
+            }
+
+            .modes-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .features-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .preset-item {
+                grid-template-columns: 1fr auto;
+            }
+
+            .preset-key {
+                justify-self: end;
+            }
+
+            .preset-time {
+                grid-column: 1;
+            }
+
+            .contact-item {
+                flex-wrap: wrap;
+            }
+
+            .contact-value {
+                flex-basis: 100%;
+                margin-left: 46px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+<div class="card">
+
+    <div class="topbar fade-in">
+        <div class="brand">🍋 <strong>Lim0n4ikzGames</strong> · Clicker</div>
+        <div class="lang-toggle">
+            <button id="lang-ru" class="active">🇷🇺 Рус</button>
+            <button id="lang-en">🇬🇧 En</button>
+        </div>
+    </div>
+
+    <div class="hero fade-in delay-1">
+        <img src="lim0n4ikzgames.ico" alt="Lim0n4ikzGames Clicker" class="logo">
+        <div>
+            <h1>Lim0n4ikzGames Clicker</h1>
+            <span class="badge">Automation Tool · Windows</span>
+        </div>
+    </div>
+
+    <div class="lang-ru active fade-in delay-2">
+        <div class="description">
+            <strong>Lim0n4ikzGames Clicker</strong> — лёгкий инструмент для автоматизации
+            повторяющихся действий с клавиатурой и мышью. Настраивайте нажатия,
+            интервалы и комбинации под свои задачи.
+        </div>
+    </div>
+
+    <div class="lang-en fade-in delay-2">
+        <div class="description">
+            <strong>Lim0n4ikzGames Clicker</strong> is a lightweight tool for automating
+            repetitive keyboard and mouse actions. Configure presses, intervals and
+            combinations for your own workflows.
+        </div>
+    </div>
+
+    <div class="meta fade-in delay-3">
+        <span>🖥️ Windows 7 / 8 / 10 / 11</span>
+        <span>⚡ 4 режима</span>
+        <span>⌨️ Keyboard + Mouse</span>
+    </div>
+
+    <div class="section-title fade-in delay-3">
+        <span>⚡</span>
+        <span class="lang-ru active">Режимы работы</span>
+        <span class="lang-en">Working modes</span>
+    </div>
+
+    <div class="modes-grid fade-in delay-4">
+        <div class="mode-item">
+            <span class="icon">⚡</span>
+            <h3 class="lang-ru active">Мгновенное нажатие</h3>
+            <h3 class="lang-en">Instant press</h3>
+            <p class="lang-ru active">Повторное нажатие клавиши или кнопки мыши через заданный интервал.</p>
+            <p class="lang-en">Repeat a keyboard key or mouse button at a configured interval.</p>
+            <code>F → wait → F</code>
+        </div>
+
+        <div class="mode-item">
+            <span class="icon">🔒</span>
+            <h3 class="lang-ru active">Зажатие клавиши</h3>
+            <h3 class="lang-en">Hold key</h3>
+            <p class="lang-ru active">Удержание выбранной клавиши в течение заданного времени.</p>
+            <p class="lang-en">Hold a selected key for a configured amount of time.</p>
+            <code>W → hold → release</code>
+        </div>
+
+        <div class="mode-item">
+            <span class="icon">🔄</span>
+            <h3 class="lang-ru active">Последовательное нажатие</h3>
+            <h3 class="lang-en">Sequential press</h3>
+            <p class="lang-ru active">Выполнение нескольких клавиш по очереди с настраиваемыми задержками.</p>
+            <p class="lang-en">Execute several keys in sequence with configurable delays.</p>
+            <code>1 → 2 → 3 → F</code>
+        </div>
+
+        <div class="mode-item">
+            <span class="icon">⌨️</span>
+            <h3 class="lang-ru active">Мгновенная комбинация</h3>
+            <h3 class="lang-en">Instant combination</h3>
+            <p class="lang-ru active">Одновременное нажатие нескольких клавиш, например Ctrl+Shift+W.</p>
+            <p class="lang-en">Press multiple keys simultaneously, such as Ctrl+Shift+W.</p>
+            <code>Ctrl + Shift + W</code>
+        </div>
+    </div>
+
+    <div class="section-title fade-in delay-4">
+        <span>🛠️</span>
+        <span class="lang-ru active">Возможности</span>
+        <span class="lang-en">Features</span>
+    </div>
+
+    <div class="features-grid fade-in delay-5">
+        <div class="feature-item">
+            <span class="icon">🖱️</span>
+            <h3 class="lang-ru active">Мышь</h3>
+            <h3 class="lang-en">Mouse</h3>
+            <p class="lang-ru active">ЛКМ, ПКМ, СКМ, X1 и X2.</p>
+            <p class="lang-en">Left, right, middle, X1 and X2 buttons.</p>
+        </div>
+
+        <div class="feature-item">
+            <span class="icon">🎲</span>
+            <h3 class="lang-ru active">Случайные интервалы</h3>
+            <h3 class="lang-en">Random intervals</h3>
+            <p class="lang-ru active">Минимальный и максимальный интервал для каждого цикла.</p>
+            <p class="lang-en">Set minimum and maximum timing for each cycle.</p>
+        </div>
+
+        <div class="feature-item">
+            <span class="icon">🔥</span>
+            <h3 class="lang-ru active">Горячие клавиши</h3>
+            <h3 class="lang-en">Hotkeys</h3>
+            <p class="lang-ru active">Запуск и остановка автоматизации с клавиатуры.</p>
+            <p class="lang-en">Start and stop automation using global hotkeys.</p>
+        </div>
+
+        <div class="feature-item">
+            <span class="icon">🌐</span>
+            <h3 class="lang-ru active">Два языка</h3>
+            <h3 class="lang-en">Two languages</h3>
+            <p class="lang-ru active">Русский и английский интерфейс.</p>
+            <p class="lang-en">Russian and English interface.</p>
+        </div>
+    </div>
+
+    <div class="warning">
+        ⚠️ <span class="lang-ru active">Использование средств автоматизации может регулироваться правилами конкретной игры или сервера. Перед использованием ознакомьтесь с актуальными правилами.</span>
+        <span class="lang-en">Automation tools may be restricted by the rules of a particular game or server. Check the current rules before using the application.</span>
+    </div>
+
+    <div class="download fade-in delay-6" id="download">
+        <h3 class="lang-ru active">Скачать Lim0n4ikzGames Clicker</h3>
+        <h3 class="lang-en">Download Lim0n4ikzGames Clicker</h3>
+
+        <p class="lang-ru active">Готовая версия для Windows. Python для запуска .exe не требуется.</p>
+        <p class="lang-en">Ready-to-use Windows build. Python is not required to run the .exe.</p>
+
+        <a class="button" href="https://github.com/lim0n4ikz/Lim0n4ikzGamesClicker/releases/latest" target="_blank" rel="noopener">
+            ⬇ <span class="lang-ru active">Скачать последнюю версию</span>
+            <span class="lang-en">Download latest release</span>
+        </a>
+
+        <a class="secondary-button" href="https://github.com/lim0n4ikz/Lim0n4ikzGamesClicker" target="_blank" rel="noopener">
+            GitHub →
+        </a>
+    </div>
+
+    <div class="contacts-title fade-in delay-6">
+        <span>📬</span>
+        <span class="lang-ru active">Контакты</span>
+        <span class="lang-en">Contacts</span>
+    </div>
+
+    <div class="contacts-list fade-in delay-6">
+        <a class="contact-item" href="https://github.com/lim0n4ikz/Lim0n4ikzGamesClicker" target="_blank" rel="noopener">
+            <span class="contact-icon">🐙</span>
+            <span class="contact-name">GitHub</span>
+            <span class="contact-value">lim0n4ikz</span>
+        </a>
+
+        <div class="contact-item" onclick="copyText('lim0n4ikz')">
+            <span class="contact-icon">🎮</span>
+            <span class="contact-name">Discord</span>
+            <span class="contact-value">lim0n4ikz</span>
+        </div>
+
+        <a class="contact-item" href="https://t.me/lim0n4ikz" target="_blank" rel="noopener">
+            <span class="contact-icon">📱</span>
+            <span class="contact-name">Telegram</span>
+            <span class="contact-value">@lim0n4ikz</span>
+        </a>
+    </div>
+
+    <div class="note">
+        🍋 Lim0n4ikzGames Clicker · Made by <strong>lim0n4ikz</strong>
+    </div>
+</div>
+
+<div id="toast" style="
+    position:fixed;
+    bottom:25px;
+    left:50%;
+    transform:translateX(-50%) translateY(80px);
+    background:#1f2535;
+    color:#cdd9ec;
+    padding:10px 24px;
+    border-radius:40px;
+    border:1px solid rgba(255,255,255,0.06);
+    font-size:0.85rem;
+    box-shadow:0 10px 30px rgba(0,0,0,0.6);
+    transition:all 0.3s ease;
+    opacity:0;
+    pointer-events:none;
+    z-index:999;
+">Скопировано!</div>
+
+<script>
+    function setLanguage(lang) {
+        document.documentElement.lang = lang;
+
+        document.getElementById('lang-ru').classList.toggle('active', lang === 'ru');
+        document.getElementById('lang-en').classList.toggle('active', lang === 'en');
+
+        document.querySelectorAll('.lang-ru').forEach(el => {
+            el.classList.toggle('active', lang === 'ru');
+        });
+
+        document.querySelectorAll('.lang-en').forEach(el => {
+            el.classList.toggle('active', lang === 'en');
+        });
+    }
+
+    document.getElementById('lang-ru').addEventListener('click', () => setLanguage('ru'));
+    document.getElementById('lang-en').addEventListener('click', () => setLanguage('en'));
+
+    function copyText(text) {
+        navigator.clipboard.writeText(text).then(() => {
+            const toast = document.getElementById('toast');
+            toast.textContent = 'Скопировано: ' + text;
+            toast.style.opacity = '1';
+            toast.style.transform = 'translateX(-50%) translateY(0)';
+
+            clearTimeout(toast._timeout);
+            toast._timeout = setTimeout(() => {
+                toast.style.opacity = '0';
+                toast.style.transform = 'translateX(-50%) translateY(80px)';
+            }, 1800);
+        });
+    }
+
+    setLanguage('ru');
+</script>
+</body>
+</html>
