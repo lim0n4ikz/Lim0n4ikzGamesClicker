@@ -34,11 +34,38 @@
             min-height: 100vh;
             padding: 28px 20px;
             background-image:
-                linear-gradient(rgba(255,255,255,0.025) 1px, transparent 1px),
-                linear-gradient(90deg, rgba(255,255,255,0.025) 1px, transparent 1px),
                 radial-gradient(circle at 12% 8%, rgba(215, 243, 106, 0.13), transparent 28%),
                 radial-gradient(circle at 90% 80%, rgba(84, 212, 196, 0.12), transparent 30%);
-            background-size: 42px 42px, 42px 42px, auto, auto;
+            background-size: auto, auto;
+        }
+
+        .moving-network {
+            position: fixed;
+            inset: -40px;
+            width: calc(100% + 80px);
+            height: calc(100% + 80px);
+            overflow: hidden;
+            pointer-events: none;
+            background-image:
+                radial-gradient(circle at 0 0, #bce8ff 2px, transparent 2px),
+                repeating-linear-gradient(rgba(120, 180, 255, 0.12) 0 1px, transparent 1px 40px),
+                repeating-linear-gradient(90deg, rgba(120, 180, 255, 0.12) 0 1px, transparent 1px 40px);
+            background-size: 40px 40px, 40px 40px, 40px 40px;
+            background-position: 0 0, 0 0, 0 0;
+            background-repeat: repeat;
+            transform: perspective(1200px) rotateX(3deg);
+            animation: networkFlow 12s linear infinite alternate;
+            opacity: 1;
+            z-index: 0;
+        }
+
+        @keyframes networkFlow {
+            from {
+                transform: perspective(1200px) rotateX(3deg) translate3d(0, 0, 0);
+            }
+            to {
+                transform: perspective(1200px) rotateX(3deg) translate3d(40px, 40px, 0);
+            }
         }
 
         .card {
@@ -55,6 +82,7 @@
                 0 30px 80px rgba(0, 0, 0, 0.5),
                 0 0 0 1px rgba(215, 243, 106, 0.04) inset;
             position: relative;
+            z-index: 1;
             overflow: hidden;
         }
 
@@ -558,6 +586,7 @@
 </head>
 
 <body>
+<div class="moving-network" aria-hidden="true"></div>
 <div class="card">
 
     <div class="topbar fade-in">
