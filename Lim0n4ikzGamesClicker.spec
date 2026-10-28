@@ -5,7 +5,7 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('profiles.json', '.'), ('settings.json', '.'), ('lim0n4ikzgames.ico', '.')],
+    datas=[('lim0n4ikzgames.ico', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
