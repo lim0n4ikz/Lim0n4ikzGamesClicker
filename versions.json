@@ -1,0 +1,46 @@
+{
+  "latest_version": "2.1",
+  "download_url": "https://github.com/lim0n4ikz/Lim0n4ikzGamesClicker/releases/latest/download/Lim0n4ikzGamesClickerSetup.exe",
+  "releases": [
+    {
+      "version": "2.0",
+      "changes": {
+        "ru": [
+          "Первый публичный релиз кликера с поддержкой клавиатуры, мыши, профилей и горячих клавиш."
+        ],
+        "en": [
+          "First public release of the clicker with keyboard, mouse, profiles, and hotkey support."
+        ]
+      }
+    },
+    {
+      "version": "2.1",
+      "changes": {
+        "ru": [
+          "При запуске приложение проверяет на GitHub, доступна ли новая версия.",
+          "Если проверить обновления не удалось, приложение продолжает запускаться в обычном режиме.",
+          "При наличии обновления показывает список изменений начиная с установленной версии.",
+          "Добавлена кнопка перехода к загрузке установщика последнего релиза; скачивание и установка запускаются пользователем.",
+          "Добавлен импорт и экспорт профилей в настройках; при импорте одноимённые профили пропускаются.",
+          "В настройках добавлены выбор языка, тёмная и восемь цветных тем, ручная проверка обновлений и Discord разработчика.",
+          "Добавлено переназначение всегда активной клавиши аварийной остановки с рекомендациями по выбору.",
+          "Выбранный язык и тема сохраняются после перезапуска приложения.",
+          "При установке обновления заменяются файлы приложения, включая его иконку.",
+          "В карточках профилей при одинаковых границах интервала отображается одно значение вместо диапазона."
+        ],
+        "en": [
+          "The application checks GitHub for updates at startup. If the check fails, it continues to start normally.",
+          "When an update is available, the application displays the changelog for versions newer than the installed version and offers to open the installer download.",
+          "The user starts the download and installation manually; installing an update replaces the application files, including its icon.",
+          "Added profile import and export in Settings. Profiles with duplicate names are skipped during import.",
+          "Added a test launcher that stores test settings and profiles separately from the regular application data.",
+          "Settings now include language selection, a manual update check, the developer's Discord, and nine themes: dark, turquoise, purple, green, orange, gray, blue, red, and pink.",
+          "Added a configurable emergency stop key. It remains active even when regular hotkeys are disabled, and Settings recommend using a dedicated key.",
+          "The selected language, theme, and emergency stop key are saved between launches.",
+          "Reorganized Settings into clearly separated sections; developer information, Discord, and the application version appear at the bottom.",
+          "Profile cards show a single interval value instead of a range when the minimum and maximum are equal."
+        ]
+      }
+    }
+  ]
+}

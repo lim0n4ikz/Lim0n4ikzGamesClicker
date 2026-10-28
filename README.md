@@ -264,6 +264,26 @@ After installation, the application is ready to use.
 
 ---
 
+## 🔄 Update checks
+
+The application checks the `versions.json` manifest in the GitHub `main` branch at startup. When a newer version is available, it displays the changelog and opens the GitHub release download page when the user chooses **Update**. The download and installation are started manually; the installer replaces application files while user settings and profiles remain in `%LOCALAPPDATA%\Lim0n4ikzGamesClicker`.
+
+To publish a release, update `APP_VERSION` in `main.py`, `MyAppVersion` in `Lim0n4ikzGamesClicker.iss`, and `latest_version` and the localized changelog in `versions.json`. Publish the installer as `Lim0n4ikzGamesClickerSetup.exe` on GitHub Releases. Keep previous changelog entries so users can see all changes since their installed version.
+
+## 📋 Profile import and export
+
+Use the **Settings** dialog to export profiles to a shareable JSON file or import profiles from another user. Existing profiles are preserved; imported profiles with duplicate names are skipped. Import files must be no larger than 5 MB.
+
+## 🎨 Application settings
+
+Settings include Russian and English languages, nine color themes, a manual update check, profile import and export, and a configurable emergency stop key. The emergency key remains active when regular hotkeys are disabled; choose a dedicated key such as Pause/Break or F12. The selected language, theme, and emergency key are saved between launches.
+
+## 🧪 Safe test launch
+
+Run `run_test.bat` from the project folder to launch the source version with separate test settings and profiles in `%LOCALAPPDATA%\Lim0n4ikzGamesClicker-Test`. It does not test the installer.
+
+---
+
 # 🛠️ Building from Source
 
 If you want to build the application yourself, you can use PyInstaller.

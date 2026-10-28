@@ -14,13 +14,10 @@ if not exist "lim0n4ikzgames.ico" (
     exit /b 1
 )
 
-if not exist "profiles.json" copy /y "profiles — копия1.json" "profiles.json" >nul
-if not exist "settings.json" type nul > "settings.json"
-
 rmdir /s /q build 2>nul
 rmdir /s /q dist\Lim0n4ikzGamesClicker 2>nul
 
-pyinstaller --noconfirm --clean --onedir --windowed --name "Lim0n4ikzGamesClicker" --icon "lim0n4ikzgames.ico" --add-data "profiles.json;." --add-data "settings.json;." --add-data "lim0n4ikzgames.ico;." main.py
+pyinstaller --noconfirm --clean --onedir --windowed --name "Lim0n4ikzGamesClicker" --icon "lim0n4ikzgames.ico" --add-data "lim0n4ikzgames.ico;." main.py
 if errorlevel 1 exit /b 1
 
 set "ISCC="

@@ -1,5 +1,5 @@
 #define MyAppName "Lim0n4ikzGames Clicker"
-#define MyAppVersion "2.0"
+#define MyAppVersion "2.1"
 #define MyAppPublisher "Lim0n4ikzGames"
 #define MyAppExeName "Lim0n4ikzGamesClicker.exe"
 
@@ -20,8 +20,6 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 
 [Files]
 Source: "dist\Lim0n4ikzGamesClicker\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "profiles.json"; DestDir: "{app}"; Flags: onlyifdoesntexist
-Source: "settings.json"; DestDir: "{app}"; Flags: onlyifdoesntexist
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\{#MyAppExeName}"
@@ -29,4 +27,3 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDi
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Запустить {#MyAppName}"; Flags: nowait postinstall skipifsilent
-

@@ -3,17 +3,27 @@ import json
 import random
 import time
 import os
+import math
+import re
+import logging
+import urllib.request
+from urllib.parse import urlparse
 from pathlib import Path
 import threading
+import html
 
-from PySide6.QtCore import Qt, QEvent, QTimer, QThread, Signal, Slot, QLocale
-from PySide6.QtGui import QFont, QAction, QCursor, QIcon, QDoubleValidator
+from PySide6.QtCore import Qt, QEvent, QTimer, QThread, Signal, Slot, QLocale, QUrl, QObject
+from PySide6.QtGui import (
+    QFont, QAction, QCursor, QIcon, QDoubleValidator, QDesktopServices, QColor,
+    QPainter, QPen,
+)
 from PySide6.QtGui import QValidator
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QLabel, QPushButton, QLineEdit, QComboBox,
     QTextEdit, QFrame, QCheckBox, QMessageBox, QRadioButton,
     QMenu, QDialog, QDialogButtonBox, QFormLayout, QSizePolicy, QScrollArea,
+    QTextBrowser, QFileDialog, QStyle, QStyleOptionButton,
 )
 
 from pynput import keyboard, mouse
@@ -42,10 +52,22 @@ if sys.platform == "win32":
 # ============================================================
 
 APP_NAME = "Lim0n4ikzGames Clicker"
+APP_VERSION = "2.1"
+PROFILE_FILE_FORMAT = "lim0n4ikz-clicker-profiles"
+MAX_PROFILE_FILE_SIZE = 5 * 1024 * 1024
+VERSION_MANIFEST_URL = (
+    "https://raw.githubusercontent.com/lim0n4ikz/"
+    "Lim0n4ikzGamesClicker/main/versions.json"
+)
 APP_DIR = Path(__file__).resolve().parent
 RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", APP_DIR))
 LEGACY_SETTINGS_FILE = APP_DIR / "settings.json"
-if getattr(sys, "frozen", False):
+configured_data_dir = os.environ.get("LIM0N4KZ_CLICKER_DATA_DIR")
+if configured_data_dir:
+    DATA_DIR = Path(configured_data_dir).expanduser()
+    SETTINGS_FILE = DATA_DIR / "settings.json"
+    PROFILES_FILE = DATA_DIR / "profiles.json"
+elif getattr(sys, "frozen", False):
     DATA_DIR = (
         Path(os.environ.get("LOCALAPPDATA", APP_DIR))
         / "Lim0n4ikzGamesClicker"
@@ -59,6 +81,126 @@ else:
 LEGACY_PROFILES_FILE = APP_DIR / "profiles.json"
 ICON_FILE = RESOURCE_DIR / "lim0n4ikzgames.ico"
 FALLBACK_ICON_FILE = RESOURCE_DIR / "lim0n4ikzgames.ico"
+
+
+def version_key(version):
+    if not isinstance(version, str) or not re.fullmatch(r"\d+(?:\.\d+){1,2}", version):
+        raise ValueError(f"Invalid application version: {version!r}")
+    parts = tuple(int(part) for part in version.split("."))
+    return parts + (0,) * (3 - len(parts))
+
+
+def parse_update_manifest(manifest, current_version):
+    if not isinstance(manifest, dict):
+        raise ValueError("Update manifest must be a JSON object")
+
+    latest = manifest.get("latest_version")
+    latest_key = version_key(latest)
+    current_key = version_key(current_version)
+    download_url = manifest.get("download_url")
+    parsed_url = urlparse(download_url) if isinstance(download_url, str) else None
+    if (
+        parsed_url is None
+        or parsed_url.scheme != "https"
+        or parsed_url.hostname != "github.com"
+    ):
+        raise ValueError("Update manifest contains an invalid download URL")
+
+    releases = manifest.get("releases")
+    if not isinstance(releases, list):
+        raise ValueError("Update manifest releases must be a list")
+
+    validated_releases = []
+    for release in releases:
+        if not isinstance(release, dict):
+            raise ValueError("Update manifest contains an invalid release")
+        release_version = release.get("version")
+        release_key = version_key(release_version)
+        changes = release.get("changes")
+        if not isinstance(changes, dict):
+            raise ValueError(f"Release {release_version} has no localized changelog")
+        localized_changes = {}
+        for language in ("ru", "en"):
+            items = changes.get(language)
+            if not isinstance(items, list) or not all(
+                isinstance(item, str) and item.strip() for item in items
+            ):
+                raise ValueError(
+                    f"Release {release_version} has an invalid {language} changelog"
+                )
+            localized_changes[language] = items
+        validated_releases.append(
+            (release_key, {"version": release_version, "changes": localized_changes})
+        )
+
+    if latest_key <= current_key:
+        return None
+
+    updates = [
+        release for release_key, release in validated_releases
+        if current_key < release_key <= latest_key
+    ]
+    if not updates or not any(release["version"] == latest for release in updates):
+        raise ValueError("Update manifest has no complete changelog up to latest_version")
+    updates.sort(key=lambda release: version_key(release["version"]))
+    return {
+        "current_version": current_version,
+        "latest_version": latest,
+        "download_url": download_url,
+        "releases": updates,
+    }
+
+
+class UpdateCheckSignals(QObject):
+    check_finished = Signal(object)
+    check_failed = Signal(str)
+
+
+class UpdateDialog(QDialog):
+    def __init__(self, update, language, parent=None):
+        super().__init__(parent)
+        is_russian = language == "ru"
+        self.setWindowTitle(
+            "Доступно обновление" if is_russian else "Update available"
+        )
+        self.setMinimumWidth(480)
+
+        layout = QVBoxLayout(self)
+        heading = QLabel(
+            f"{'Версия' if is_russian else 'Version'} "
+            f"{update['current_version']} → {update['latest_version']}"
+        )
+        heading.setStyleSheet("font-size: 16px; font-weight: 700;")
+        layout.addWidget(heading)
+
+        changelog = QTextBrowser()
+        changelog.setOpenExternalLinks(False)
+        changelog.setMinimumHeight(220)
+        sections = []
+        language_key = "ru" if is_russian else "en"
+        for release in update["releases"]:
+            items = "".join(
+                f"<li>{html.escape(item)}</li>"
+                for item in release["changes"][language_key]
+            )
+            sections.append(
+                f"<h3>v{html.escape(release['version'])}</h3><ul>{items}</ul>"
+            )
+        changelog.setHtml("".join(sections))
+        layout.addWidget(changelog)
+
+        buttons = QDialogButtonBox()
+        update_button = buttons.addButton(
+            "Обновить" if is_russian else "Update",
+            QDialogButtonBox.AcceptRole,
+        )
+        later_button = buttons.addButton(
+            "Позже" if is_russian else "Later",
+            QDialogButtonBox.RejectRole,
+        )
+        update_button.clicked.connect(self.accept)
+        later_button.clicked.connect(self.reject)
+        layout.addWidget(buttons)
 
 if sys.platform == "win32":
     import ctypes
@@ -94,9 +236,135 @@ QPushButton#yellow { background: #30270f; border: 1px solid #80651d; color: #ffd
 QCheckBox { spacing: 9px; color: #dce7f5; }
 QCheckBox::indicator { width: 20px; height: 20px; border-radius: 6px; background: #17283a; border: 1px solid #34516d; }
 QCheckBox::indicator:checked { background: #286bd2; border: 1px solid #5b9cff; }
+
 QPushButton#menu-btn { background: #1a2d44; border: 1px solid #3a5a7a; border-radius: 6px; font-size: 18px; color: #b0ccee; }
 QPushButton#menu-btn:hover { background: #2a4060; }
+QPushButton#settings-btn { background: #102238; border: 1px solid #335271; border-radius: 19px; color: #b0ccee; padding: 0; }
+QPushButton#settings-btn:hover { background: #17304d; border-color: #5b9cff; }
 """
+
+def build_color_theme(
+    background,
+    panel,
+    input_background,
+    border,
+    muted,
+    accent,
+    accent_hover,
+    button_background,
+    button_hover,
+    secondary_text,
+):
+    return {
+        "#060d16": background,
+        "#eef5ff": "#e8edf5",
+        "#0b1725": panel,
+        "#223952": border,
+        "#91a4ba": muted,
+        "#75aaff": accent,
+        "#06111c": input_background,
+        "#29425e": border,
+        "#286bd0": accent,
+        "#286bd2": accent,
+        "#4d91ff": accent_hover,
+        "#102238": button_background,
+        "#335271": border,
+        "#17304d": button_hover,
+        "#5b9cff": accent_hover,
+        "#347be8": accent_hover,
+        "#dce7f5": secondary_text,
+        "#17283a": button_background,
+        "#34516d": border,
+        "#1a2d44": button_background,
+        "#3a5a7a": border,
+        "#b0ccee": accent_hover,
+        "#2a4060": button_hover,
+        "#07111d": input_background,
+        "#2b435d": border,
+        "#b9c9dc": secondary_text,
+        "#091622": panel,
+        "#6196df": accent,
+        "#e8edf5": secondary_text,
+        "#9aaec9": muted,
+        "#8b9bb5": muted,
+        "#6a7d9b": muted,
+        "#cdd9ec": secondary_text,
+    }
+
+
+THEME_COLOR_MAPS = {
+    "dark": {},
+    "ocean": build_color_theme(
+        "#07151d", "#0d2530", "#091d26", "#28616b", "#9bb9c2",
+        "#54d4c4", "#35b8c2", "#123542", "#1a4755", "#d2eaf0",
+    ),
+    "purple": build_color_theme(
+        "#100d1c", "#1b1530", "#140f24", "#3c315d", "#b2a7c9",
+        "#b49aff", "#c7b5ff", "#241c3d", "#302650", "#e0d9f0",
+    ),
+    "forest": build_color_theme(
+        "#0b1711", "#12251a", "#0e1c14", "#315440", "#a1b9a5",
+        "#83d99a", "#a0e8ad", "#183522", "#21472d", "#d5e8d8",
+    ),
+    "sunset": build_color_theme(
+        "#1b1010", "#2b1918", "#211312", "#69403a", "#c5a9a0",
+        "#ff9d76", "#ffc09c", "#3a211d", "#4b2b25", "#f0d8cf",
+    ),
+    "gray": build_color_theme(
+        "#121416", "#1d2023", "#17191c", "#41464b", "#a4abb2",
+        "#b5bec7", "#d0d6dc", "#272b2f", "#343a40", "#e0e4e8",
+    ),
+    "blue": build_color_theme(
+        "#0d1420", "#151f30", "#101a29", "#344d70", "#a5b8d2",
+        "#8ab4f8", "#a8c7fa", "#1c2a40", "#263854", "#dce7f5",
+    ),
+    "red": build_color_theme(
+        "#1a1012", "#291719", "#201315", "#62383d", "#c5a5a8",
+        "#ff8a8a", "#ffaaaa", "#382023", "#4b2a2e", "#f0d9dc",
+    ),
+    "pink": build_color_theme(
+        "#1a1018", "#291725", "#20131d", "#613652", "#c5a5bc",
+        "#ff8acb", "#ffaddb", "#382033", "#4b2b45", "#f0d9e8",
+    ),
+}
+
+THEME_BUTTON_TEXT_COLORS = {
+    "ocean": "#07151d",
+    "purple": "#100d1c",
+    "forest": "#0b1711",
+    "sunset": "#1b1010",
+    "gray": "#121416",
+    "blue": "#0d1420",
+    "red": "#1a1012",
+    "pink": "#1a1018",
+}
+
+
+def theme_stylesheet(theme, font_size=None):
+    color_map = THEME_COLOR_MAPS[theme]
+    stylesheet = re.sub(
+        r"#[0-9a-fA-F]{6}",
+        lambda match: color_map.get(match.group().lower(), match.group()),
+        STYLE,
+    )
+    button_text_color = THEME_BUTTON_TEXT_COLORS.get(theme)
+    if button_text_color:
+        stylesheet += (
+            "\nQPushButton#blue, QPushButton#blue:hover "
+            f"{{ color: {button_text_color}; }}"
+        )
+    if font_size is not None:
+        stylesheet += f"\nQWidget {{ font-size: {font_size}px; }}"
+    return stylesheet
+
+
+def theme_local_stylesheet(stylesheet, theme):
+    color_map = THEME_COLOR_MAPS[theme]
+    return re.sub(
+        r"#[0-9a-fA-F]{6}",
+        lambda match: color_map.get(match.group().lower(), match.group()),
+        stylesheet,
+    )
 
 # ============================================================
 # DIALOG FOR EDITING PROFILE
@@ -476,6 +744,39 @@ class ClickerWorker(QThread):
     def stop(self):
         self.stop_event.set()
 
+class CheckmarkCheckBox(QCheckBox):
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if not self.isChecked():
+            return
+
+        option = QStyleOptionButton()
+        self.initStyleOption(option)
+        indicator = self.style().subElementRect(
+            QStyle.SubElement.SE_CheckBoxIndicator,
+            option,
+            self,
+        )
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(QColor("#060d16"), 2.2)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        painter.drawLine(
+            indicator.left() + indicator.width() * 0.24,
+            indicator.top() + indicator.height() * 0.52,
+            indicator.left() + indicator.width() * 0.43,
+            indicator.top() + indicator.height() * 0.7,
+        )
+        painter.drawLine(
+            indicator.left() + indicator.width() * 0.43,
+            indicator.top() + indicator.height() * 0.7,
+            indicator.left() + indicator.width() * 0.77,
+            indicator.top() + indicator.height() * 0.32,
+        )
+
+
 # ============================================================
 # PROFILE WIDGET (with menu)
 # ============================================================
@@ -497,8 +798,10 @@ class ProfileWidget(QFrame):
         layout.setSpacing(13)
 
         icon = QLabel(profile.get("icon", "✨"))
-        icon.setFont(QFont("Segoe UI Emoji", 27))
-        icon.setFixedWidth(45)
+        icon.setStyleSheet(
+            'font-family: "Segoe UI Emoji"; font-size: 48pt;'
+        )
+        icon.setFixedSize(72, 72)
         icon.setAlignment(Qt.AlignCenter)
         layout.addWidget(icon)
 
@@ -509,11 +812,20 @@ class ProfileWidget(QFrame):
         name.setStyleSheet("font-size: 15px; font-weight: 700;")
 
         mode = QLabel(f'<span style="color:#75aaff;">{self.parent.tr("mode")}:</span> {profile["mode"]}')
-        interval_text = (
-            f'{self.parent.tr("interval")}: {profile["min"]} sec.'
-            if not profile.get("random", True)
-            else f'{self.parent.tr("interval")}: {profile["min"]} — {profile["max"]} sec.'
-        )
+        minimum_interval = profile["min"]
+        maximum_interval = profile["max"]
+        if (
+            not profile.get("random", True)
+            or float(minimum_interval) == float(maximum_interval)
+        ):
+            interval_text = (
+                f'{self.parent.tr("interval")}: {minimum_interval} sec.'
+            )
+        else:
+            interval_text = (
+                f'{self.parent.tr("interval")}: {minimum_interval} — '
+                f'{maximum_interval} sec.'
+            )
         interval = QLabel(interval_text)
         mode.setWordWrap(True)
         interval.setWordWrap(True)
@@ -569,6 +881,7 @@ class MainWindow(QMainWindow):
     hotkey_label_signal = Signal(str)
     start_label_signal = Signal(str)
     stop_label_signal = Signal(str)
+    emergency_stop_key_signal = Signal(str)
     status_signal = Signal(str, str)
     update_language_signal = Signal()
     start_request_signal = Signal()
@@ -610,6 +923,8 @@ class MainWindow(QMainWindow):
         # ---- ИСПРАВЛЕНИЕ: храним множества строк, а не объектов ----
         self.start_hotkey = {"F6"}
         self.stop_hotkey = {"F7"}
+        self.emergency_stop_key = "ESC"
+        self.waiting_for_emergency_key = False
         self.pressed_keys = set()          # строки
         self.binding_capture_keys = set()  # строки (во время захвата)
         self.sequence_capture_keys = []
@@ -629,7 +944,11 @@ class MainWindow(QMainWindow):
         self.current_mode = self.MODE_INSTANT
 
         self.language = 'ru'
+        self.theme = "dark"
         self.init_translations()
+        self.update_check_signals = UpdateCheckSignals()
+        self.update_check_started = False
+        self.manual_update_check_pending = False
 
         self.profiles = self.load_profiles()
         self.build_ui()
@@ -645,7 +964,16 @@ class MainWindow(QMainWindow):
         self.hotkey_label_signal.connect(self._set_hotkey_label)
         self.start_label_signal.connect(self._set_start_label)
         self.stop_label_signal.connect(self._set_stop_label)
+        self.emergency_stop_key_signal.connect(
+            self._set_emergency_stop_key_label
+        )
         self.status_signal.connect(self._set_status)
+        self.update_check_signals.check_finished.connect(
+            self.handle_update_check_finished
+        )
+        self.update_check_signals.check_failed.connect(
+            self.log_update_check_failure
+        )
         self.update_language_signal.connect(self.update_language)
         self.start_request_signal.connect(self.start_clicker)
         self.stop_request_signal.connect(self.stop_clicker)
@@ -658,6 +986,72 @@ class MainWindow(QMainWindow):
 
         # Обновляем состояние кнопок управления горячими клавишами
         self.update_hotkey_ui()
+        QTimer.singleShot(1000, self.check_for_updates)
+
+    def check_for_updates(self, manual=False):
+        if manual:
+            self.manual_update_check_pending = True
+        if self.update_check_started:
+            return
+        self.update_check_started = True
+        signals = self.update_check_signals
+
+        def check():
+            try:
+                request = urllib.request.Request(
+                    VERSION_MANIFEST_URL,
+                    headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"},
+                )
+                with urllib.request.urlopen(request, timeout=8) as response:
+                    manifest = json.loads(response.read().decode("utf-8"))
+                update = parse_update_manifest(manifest, APP_VERSION)
+                signals.check_finished.emit(update)
+            except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+                signals.check_failed.emit(str(error))
+
+        threading.Thread(
+            target=check,
+            name="update-check",
+            daemon=True,
+        ).start()
+
+    @Slot(object)
+    def handle_update_check_finished(self, update):
+        self.update_check_started = False
+        manual_check = self.manual_update_check_pending
+        self.manual_update_check_pending = False
+        if update:
+            self.show_update_dialog(update)
+        elif manual_check:
+            QMessageBox.information(
+                self,
+                self.tr("update_check_title"),
+                self.tr("update_current_version").format(APP_VERSION),
+            )
+
+    @Slot(dict)
+    def show_update_dialog(self, update):
+        dialog = UpdateDialog(update, self.language, self)
+        self.apply_theme()
+        if dialog.exec() == QDialog.Accepted:
+            if not QDesktopServices.openUrl(QUrl(update["download_url"])):
+                QMessageBox.warning(
+                    self,
+                    self.tr("update_error_title"),
+                    self.tr("update_open_error"),
+                )
+
+    @Slot(str)
+    def log_update_check_failure(self, error):
+        self.update_check_started = False
+        logging.getLogger(__name__).warning("Could not check for updates: %s", error)
+        if self.manual_update_check_pending:
+            self.manual_update_check_pending = False
+            QMessageBox.warning(
+                self,
+                self.tr("update_error_title"),
+                self.tr("update_check_error"),
+            )
 
     def _ensure_listeners_started(self):
         if self.listeners_started:
@@ -680,7 +1074,61 @@ class MainWindow(QMainWindow):
         self.translations = {
             'ru': {
                 'title': APP_NAME,
-                'subtitle': "Modern Auto Clicker • v2.0",
+                'subtitle': "Modern Auto Clicker",
+                'settings_title': "Настройки",
+                'settings_button_tooltip': "Открыть настройки",
+                'dialog_close': "Закрыть",
+                'settings_version': "Версия приложения: {}",
+                'settings_developer': "Разработчик: lim0n4ikz",
+                'settings_developer_discord': "Discord разработчика: lim0n4ikz",
+                'settings_theme': "Тема оформления",
+                'emergency_stop_title': "Аварийная остановка",
+                'emergency_stop_warning': (
+                    "Эта клавиша всегда активна, даже если обычные бинды выключены "
+                    "или окно свёрнуто. Рекомендуется назначить отдельную клавишу, "
+                    "например Pause/Break или F12. Не используйте клавишу запуска "
+                    "или часто используемую в игре клавишу."
+                ),
+                'emergency_stop_assign': "Назначить клавишу",
+                'emergency_stop_capture': "Нажмите клавишу...",
+                'settings_updates_section': "Обновления",
+                'theme_dark': "Тёмная",
+                'theme_ocean': "Бирюзовая",
+                'theme_purple': "Фиолетовая",
+                'theme_forest': "Зелёная",
+                'theme_sunset': "Оранжевая",
+                'theme_gray': "Серая",
+                'theme_blue': "Синяя",
+                'theme_red': "Красная",
+                'theme_pink': "Розовая",
+                'update_check_button': "Проверить обновления",
+                'update_check_title': "Проверка обновлений",
+                'update_current_version': "У вас установлена актуальная версия {}.",
+                'update_check_error': "Не удалось проверить обновления. Проверьте подключение к интернету и попробуйте ещё раз.",
+                'profiles_transfer_title': "Профили",
+                'profiles_export': "Экспортировать профили",
+                'profiles_import': "Импортировать профили",
+                'profiles_export_success': "Профили экспортированы.",
+                'profiles_import_success': "Импортировано профилей: {}. Пропущено дубликатов: {}.",
+                'profiles_import_empty': "В файле нет новых профилей. Пропущено дубликатов: {}.",
+                'profiles_export_error': "Не удалось экспортировать профили:\n{}",
+                'profiles_import_error': "Не удалось импортировать профили:\n{}",
+                'profiles_import_save_error': "Не удалось сохранить импортированные профили.",
+                'profiles_file_filter': "Файлы профилей (*.json)",
+                'profile_object_invalid': "Каждый профиль должен быть объектом JSON",
+                'profile_name_required': "У профиля должно быть непустое название",
+                'profile_icon_invalid': "Некорректная иконка профиля «{}»",
+                'profile_key_required': "У профиля «{}» должна быть указана клавиша",
+                'profile_mode_unknown': "Неизвестный режим профиля «{}»",
+                'profile_value_invalid': "Некорректное значение «{}» в профиле «{}»",
+                'profile_random_invalid': "Некорректный случайный интервал в профиле «{}»",
+                'profile_sequence_invalid': "Некорректная последовательность в профиле «{}»",
+                'profile_file_too_large': "Размер файла профилей превышает 5 МБ",
+                'profile_file_format_invalid': "Неподдерживаемый формат файла профилей",
+                'profile_file_schema_invalid': "Неподдерживаемая версия файла профилей",
+                'profile_file_list_invalid': "Файл должен содержать список профилей",
+                'update_error_title': "Ошибка",
+                'update_open_error': "Не удалось открыть страницу загрузки обновления.",
                 'status_stopped': "● Остановлен",
                 'status_running': "● Кликер работает",
                 'status_error': "● Ошибка параметров",
@@ -717,7 +1165,7 @@ class MainWindow(QMainWindow):
                 'label_hold': "Зажатие, сек.",
                 'label_control': "УПРАВЛЕНИЕ",
                 'button_start': "▶  ЗАПУСТИТЬ",
-                'button_stop': "■  ОСТАНОВИТЬ (Esc)",
+                'button_stop': "■  ОСТАНОВИТЬ ({})",
                 'button_hotkeys_enable': "Включить бинды",
                 'button_hotkeys_disable': "Выключить бинды",
                 'label_hotkey_bindings': "ГОРЯЧИЕ КЛАВИШИ ЗАПУСКА И ОСТАНОВКИ",
@@ -725,7 +1173,6 @@ class MainWindow(QMainWindow):
                 'label_stop_binding': "Остановка:",
                 'label_bindings_disabled': "Глобальные бинды выключены",
                 'label_hotkey_info': "{} — запуск | {} — остановка",
-                'footer_creator_discord': "Discord создателя - lim0n4ikz",
                 'placeholder_sequence': "Например: SPACE, ENTER, ЛКМ, W",
                 'placeholder_combo': "Например: CTRL+SHIFT+W",
                 'lang_ru': "Русский",
@@ -746,11 +1193,65 @@ class MainWindow(QMainWindow):
                 'profile_delete_confirm': "Вы уверены, что хотите удалить профиль '{}'?",
                 'mode': "Режим",
                 'interval': "Интервал",
-                'language': "Language",
+                'language': "Язык",
             },
             'en': {
                 'title': APP_NAME,
-                'subtitle': "Modern Auto Clicker • v2.0",
+                'subtitle': "Modern Auto Clicker",
+                'settings_title': "Settings",
+                'settings_button_tooltip': "Open settings",
+                'dialog_close': "Close",
+                'settings_version': "Application version: {}",
+                'settings_developer': "Developer: lim0n4ikz",
+                'settings_developer_discord': "Developer Discord: lim0n4ikz",
+                'settings_theme': "Appearance theme",
+                'emergency_stop_title': "Emergency stop",
+                'emergency_stop_warning': (
+                    "This key is always active, even when regular hotkeys are "
+                    "disabled or the window is minimized. Use a dedicated key "
+                    "such as Pause/Break or F12. Avoid the start key and keys "
+                    "you frequently use in your game."
+                ),
+                'emergency_stop_assign': "Assign key",
+                'emergency_stop_capture': "Press a key...",
+                'settings_updates_section': "Updates",
+                'theme_dark': "Dark",
+                'theme_ocean': "Turquoise",
+                'theme_purple': "Purple",
+                'theme_forest': "Green",
+                'theme_sunset': "Orange",
+                'theme_gray': "Gray",
+                'theme_blue': "Blue",
+                'theme_red': "Red",
+                'theme_pink': "Pink",
+                'update_check_button': "Check for updates",
+                'update_check_title': "Update check",
+                'update_current_version': "You are using the latest version {}.",
+                'update_check_error': "Could not check for updates. Check your internet connection and try again.",
+                'profiles_transfer_title': "Profiles",
+                'profiles_export': "Export profiles",
+                'profiles_import': "Import profiles",
+                'profiles_export_success': "Profiles exported.",
+                'profiles_import_success': "Imported profiles: {}. Skipped duplicates: {}.",
+                'profiles_import_empty': "No new profiles in the file. Skipped duplicates: {}.",
+                'profiles_export_error': "Could not export profiles:\n{}",
+                'profiles_import_error': "Could not import profiles:\n{}",
+                'profiles_import_save_error': "Could not save the imported profiles.",
+                'profiles_file_filter': "Profile files (*.json)",
+                'profile_object_invalid': "Each profile must be a JSON object",
+                'profile_name_required': "Each profile must have a non-empty name",
+                'profile_icon_invalid': "Invalid icon in profile \"{}\"",
+                'profile_key_required': "Profile \"{}\" must specify a key",
+                'profile_mode_unknown': "Unknown mode in profile \"{}\"",
+                'profile_value_invalid': "Invalid \"{}\" value in profile \"{}\"",
+                'profile_random_invalid': "Invalid random interval in profile \"{}\"",
+                'profile_sequence_invalid': "Invalid sequence in profile \"{}\"",
+                'profile_file_too_large': "Profile file exceeds 5 MB",
+                'profile_file_format_invalid': "Unsupported profile file format",
+                'profile_file_schema_invalid': "Unsupported profile file version",
+                'profile_file_list_invalid': "The file must contain a profile list",
+                'update_error_title': "Error",
+                'update_open_error': "Could not open the update download page.",
                 'status_stopped': "● Stopped",
                 'status_running': "● Clicker running",
                 'status_error': "● Parameter error",
@@ -787,7 +1288,7 @@ class MainWindow(QMainWindow):
                 'label_hold': "Hold, sec.",
                 'label_control': "CONTROL",
                 'button_start': "▶  START",
-                'button_stop': "■  STOP (Esc)",
+                'button_stop': "■  STOP ({})",
                 'button_hotkeys_enable': "Enable hotkeys",
                 'button_hotkeys_disable': "Disable hotkeys",
                 'label_hotkey_bindings': "START & STOP HOTKEYS",
@@ -795,7 +1296,6 @@ class MainWindow(QMainWindow):
                 'label_stop_binding': "Stop:",
                 'label_bindings_disabled': "Global hotkeys disabled",
                 'label_hotkey_info': "{} — start | {} — stop",
-                'footer_creator_discord': "Creator's Discord - lim0n4ikz",
                 'placeholder_sequence': "E.g.: SPACE, ENTER, LMB, W",
                 'placeholder_combo': "E.g.: CTRL+SHIFT+W",
                 'lang_ru': "Russian",
@@ -816,7 +1316,7 @@ class MainWindow(QMainWindow):
                 'profile_delete_confirm': "Are you sure you want to delete profile '{}'?",
                 'mode': "Mode",
                 'interval': "Interval",
-                'language': "Язык",
+                'language': "Language",
             }
         }
 
@@ -839,6 +1339,41 @@ class MainWindow(QMainWindow):
     def update_language(self):
         # Заголовки и основные надписи
         self.title.setText(self.tr('title'))
+        self.subtitle.setText(self.tr('subtitle'))
+        self.settings_dialog.setWindowTitle(self.tr('settings_title'))
+        self.settings_version_label.setText(
+            self.tr('settings_version').format(APP_VERSION)
+        )
+        self.settings_developer_label.setText(self.tr('settings_developer'))
+        self.settings_developer_discord_label.setText(
+            self.tr('settings_developer_discord')
+        )
+        self.settings_theme_label.setText(self.tr('settings_theme'))
+        self.settings_updates_title_label.setText(
+            self.tr('settings_updates_section')
+        )
+        self.emergency_stop_title_label.setText(
+            self.tr('emergency_stop_title')
+        )
+        self.emergency_stop_warning_label.setText(
+            self.tr('emergency_stop_warning')
+        )
+        self.emergency_stop_assign_button.setText(
+            self.tr('emergency_stop_capture')
+            if self.waiting_for_emergency_key
+            else self.tr('emergency_stop_assign')
+        )
+        if not self.waiting_for_emergency_key:
+            self.emergency_stop_key_edit.setText(self.emergency_stop_key)
+        self.update_check_button.setText(self.tr('update_check_button'))
+        self.profiles_transfer_title_label.setText(
+            self.tr('profiles_transfer_title')
+        )
+        self.profiles_export_button.setText(self.tr('profiles_export'))
+        self.profiles_import_button.setText(self.tr('profiles_import'))
+        self.settings_close_button.setText(self.tr('dialog_close'))
+        self.settings_button.setToolTip(self.tr('settings_button_tooltip'))
+        self.settings_button.setAccessibleName(self.tr('settings_title'))
         self.section_mode.setText(self.tr('label_mode'))
         self.section_params.setText(self.tr('label_settings'))
         self.lbl_click_key.setText(self.tr('label_click_key'))
@@ -855,7 +1390,9 @@ class MainWindow(QMainWindow):
         self.sequence_clear_btn.setText(self.tr('button_clear'))
         self.sequence_apply_btn.setText(self.tr('button_apply'))
         self.start_btn.setText(self.tr('button_start'))
-        self.stop_btn.setText(self.tr('button_stop'))
+        self.stop_btn.setText(
+            self.tr('button_stop').format(self.emergency_stop_key)
+        )
         self.section_hk.setText(self.tr('label_hotkey_bindings'))
         self.lbl_hk_start.setText(self.tr('label_start_binding'))
         self.lbl_hk_stop.setText(self.tr('label_stop_binding'))
@@ -868,8 +1405,6 @@ class MainWindow(QMainWindow):
         self.profiles_title_label.setText(self.tr('profiles_title'))
         self.add_profile_btn.setText(self.tr('add_profile'))
         self.lang_label.setText(self.tr('language'))
-        self.footer.setText(self.tr('footer_creator_discord'))
-
         # Обновление выпадающего списка режимов
         self.mode.blockSignals(True)
         self.mode.clear()
@@ -900,6 +1435,20 @@ class MainWindow(QMainWindow):
         else:
             self.lang_combo.setCurrentText(self.tr('lang_ru'))
         self.lang_combo.blockSignals(False)
+        self.theme_combo.blockSignals(True)
+        self.theme_combo.clear()
+        self.theme_combo.addItem(self.tr('theme_dark'), "dark")
+        self.theme_combo.addItem(self.tr('theme_ocean'), "ocean")
+        self.theme_combo.addItem(self.tr('theme_purple'), "purple")
+        self.theme_combo.addItem(self.tr('theme_forest'), "forest")
+        self.theme_combo.addItem(self.tr('theme_sunset'), "sunset")
+        self.theme_combo.addItem(self.tr('theme_gray'), "gray")
+        self.theme_combo.addItem(self.tr('theme_blue'), "blue")
+        self.theme_combo.addItem(self.tr('theme_red'), "red")
+        self.theme_combo.addItem(self.tr('theme_pink'), "pink")
+        theme_index = self.theme_combo.findData(self.theme)
+        self.theme_combo.setCurrentIndex(max(0, theme_index))
+        self.theme_combo.blockSignals(False)
 
         # Перерисовываем профили, чтобы обновить текст меню и подписи
         self.refresh_profiles()
@@ -927,14 +1476,50 @@ class MainWindow(QMainWindow):
         self.assign_hk_stop.setEnabled(True)
         self.update_info_label()
 
+    def apply_theme(self):
+        if self.theme not in THEME_COLOR_MAPS:
+            self.theme = "dark"
+        app = QApplication.instance()
+        if app:
+            app.setStyleSheet(
+                theme_stylesheet(self.theme, self._responsive_font_size)
+            )
+        for widget in self.findChildren(QWidget):
+            if widget is self.status_label:
+                continue
+            base_stylesheet = widget.property("_base_theme_stylesheet")
+            if base_stylesheet is None:
+                base_stylesheet = widget.styleSheet()
+                widget.setProperty("_base_theme_stylesheet", base_stylesheet)
+            widget.setStyleSheet(theme_local_stylesheet(
+                base_stylesheet,
+                self.theme,
+            ))
+        if hasattr(self, "status_label"):
+            status_color = THEME_COLOR_MAPS[self.theme].get(
+                self._status_base_color.lower(),
+                self._status_base_color,
+            )
+            self.status_label.setStyleSheet(
+                f"color: {status_color}; font-weight: 600;"
+            )
+
+    def on_theme_changed(self, index):
+        selected_theme = self.theme_combo.itemData(index)
+        if selected_theme not in THEME_COLOR_MAPS:
+            return
+        self.theme = selected_theme
+        self.apply_theme()
+        self.save_settings()
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         font_size = max(11, min(14, round(self.width() / 90)))
         if font_size != self._responsive_font_size:
             self._responsive_font_size = font_size
-            self.setStyleSheet(
-                STYLE + f"\nQWidget {{ font-size: {font_size}px; }}"
-            )
+            app = QApplication.instance()
+            if app:
+                app.setStyleSheet(theme_stylesheet(self.theme, font_size))
 
     # ==========================================================
     # ИНТЕРФЕЙС UI
@@ -964,24 +1549,25 @@ class MainWindow(QMainWindow):
         title_box.setSpacing(2)
         self.title = QLabel(APP_NAME)
         self.title.setObjectName("title")
-        subtitle = QLabel("Modern Auto Clicker • v2.0")
-        subtitle.setObjectName("subtitle")
+        self.subtitle = QLabel(self.tr('subtitle'))
+        self.subtitle.setObjectName("subtitle")
         title_box.addWidget(self.title)
-        title_box.addWidget(subtitle)
+        title_box.addWidget(self.subtitle)
         header.addLayout(title_box)
         header.addStretch()
 
-        self.lang_label = QLabel(self.tr('language'))
-        self.lang_label.setObjectName("section")
-        self.lang_combo = QComboBox()
-        self.lang_combo.addItems([self.tr('lang_ru'), self.tr('lang_en')])
-        self.lang_combo.currentIndexChanged.connect(self.on_language_changed)
-        header.addWidget(self.lang_label)
-        header.addWidget(self.lang_combo)
-
         self.status_label = QLabel(self.tr('status_stopped'))
+        self._status_base_color = "#ff6873"
         self.status_label.setStyleSheet("color:#ff6873; font-weight:600;")
         header.addWidget(self.status_label)
+        self.settings_button = QPushButton("⚙")
+        self.settings_button.setObjectName("settings-btn")
+        self.settings_button.setFixedSize(38, 38)
+        self.settings_button.setFont(QFont("Segoe UI Symbol", 18))
+        self.settings_button.setToolTip(self.tr('settings_button_tooltip'))
+        self.settings_button.setAccessibleName(self.tr('settings_title'))
+        self.settings_button.clicked.connect(self.show_settings_dialog)
+        header.addWidget(self.settings_button)
         root.addLayout(header)
 
         # ---------------- TABS ----------------
@@ -1010,11 +1596,325 @@ class MainWindow(QMainWindow):
         left_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         right_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-        # ---------------- FOOTER ----------------
-        self.footer = QLabel(self.tr('footer_creator_discord'))
-        self.footer.setAlignment(Qt.AlignCenter)
-        self.footer.setStyleSheet("QLabel { background: #091622; border: 1px solid #223952; border-radius: 10px; padding: 11px; color: #6196df; }")
-        root.addWidget(self.footer)
+        self.build_settings_dialog()
+
+    def show_settings_dialog(self):
+        self.settings_dialog.exec()
+
+    def export_profiles(self):
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            self.tr('profiles_export'),
+            "clicker-profiles.json",
+            self.tr('profiles_file_filter'),
+        )
+        if not file_path:
+            return
+
+        payload = {
+            "format": PROFILE_FILE_FORMAT,
+            "schema_version": 1,
+            "profiles": self.profiles,
+        }
+        try:
+            with open(file_path, "w", encoding="utf-8") as profile_file:
+                json.dump(payload, profile_file, ensure_ascii=False, indent=2)
+        except (OSError, TypeError, ValueError) as error:
+            QMessageBox.warning(
+                self,
+                self.tr('profiles_transfer_title'),
+                self.tr('profiles_export_error').format(error),
+            )
+            return
+
+        QMessageBox.information(
+            self,
+            self.tr('profiles_transfer_title'),
+            self.tr('profiles_export_success'),
+        )
+
+    def _validate_imported_profile(self, profile):
+        if not isinstance(profile, dict):
+            raise ValueError(self.tr('profile_object_invalid'))
+
+        name = profile.get("name")
+        icon = profile.get("icon", "✨")
+        mode = profile.get("mode")
+        key = profile.get("key")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(self.tr('profile_name_required'))
+        if not isinstance(icon, str):
+            raise ValueError(self.tr('profile_icon_invalid', name))
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError(self.tr('profile_key_required', name))
+
+        supported_modes = {
+            self.MODE_INSTANT,
+            self.MODE_HOLD,
+            self.MODE_SEQUENCE,
+            self.MODE_COMBO,
+            "Instant press",
+            "Hold key",
+            "Sequence press",
+            "Instant combo",
+            "Обычный клик",
+        }
+        for language in ("ru", "en"):
+            supported_modes.update(
+                self.translations[language][translation_key]
+                for translation_key in (
+                    "mode_instant",
+                    "mode_hold",
+                    "mode_sequence",
+                    "mode_combo",
+                )
+            )
+        if not isinstance(mode, str) or mode not in supported_modes:
+            raise ValueError(self.tr('profile_mode_unknown', name))
+
+        def numeric_value(field, default=None):
+            value = profile.get(field, default)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+            ):
+                raise ValueError(self.tr('profile_value_invalid', field, name))
+            try:
+                normalized = float(value)
+            except OverflowError as error:
+                raise ValueError(
+                    self.tr('profile_value_invalid', field, name)
+                ) from error
+            if not math.isfinite(normalized) or normalized < 0:
+                raise ValueError(self.tr('profile_value_invalid', field, name))
+            return normalized
+
+        minimum = numeric_value("min")
+        maximum = numeric_value("max")
+        hold = numeric_value("hold", 1.0)
+        between = numeric_value("between", 0.2)
+        random_interval = profile.get("random", True)
+        sequence = profile.get("sequence", "")
+        if not isinstance(random_interval, bool):
+            raise ValueError(self.tr('profile_random_invalid', name))
+        if not isinstance(sequence, str):
+            raise ValueError(self.tr('profile_sequence_invalid', name))
+
+        return {
+            "icon": icon,
+            "name": name.strip(),
+            "mode": mode,
+            "min": minimum,
+            "max": maximum,
+            "hold": hold,
+            "between": between,
+            "key": key.strip(),
+            "sequence": sequence,
+            "random": random_interval,
+        }
+
+    def import_profiles(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            self.tr('profiles_import'),
+            "",
+            self.tr('profiles_file_filter'),
+        )
+        if not file_path:
+            return
+
+        try:
+            profile_path = Path(file_path)
+            if profile_path.stat().st_size > MAX_PROFILE_FILE_SIZE:
+                raise ValueError(self.tr('profile_file_too_large'))
+            raw_data = profile_path.read_bytes()
+            if len(raw_data) > MAX_PROFILE_FILE_SIZE:
+                raise ValueError(self.tr('profile_file_too_large'))
+            payload = json.loads(raw_data.decode("utf-8"))
+            if isinstance(payload, dict):
+                if payload.get("format") != PROFILE_FILE_FORMAT:
+                    raise ValueError(self.tr('profile_file_format_invalid'))
+                if payload.get("schema_version") != 1:
+                    raise ValueError(self.tr('profile_file_schema_invalid'))
+                imported_profiles = payload.get("profiles")
+            else:
+                imported_profiles = payload
+            if not isinstance(imported_profiles, list):
+                raise ValueError(self.tr('profile_file_list_invalid'))
+            profiles_to_import = [
+                self._validate_imported_profile(profile)
+                for profile in imported_profiles
+            ]
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+            QMessageBox.warning(
+                self,
+                self.tr('profiles_transfer_title'),
+                self.tr('profiles_import_error').format(error),
+            )
+            return
+
+        existing_names = {
+            profile.get("name", "").strip().casefold()
+            for profile in self.profiles
+            if isinstance(profile.get("name"), str)
+        }
+        updated_profiles = list(self.profiles)
+        skipped = 0
+        for profile in profiles_to_import:
+            normalized_name = profile["name"].casefold()
+            if normalized_name in existing_names:
+                skipped += 1
+                continue
+            existing_names.add(normalized_name)
+            updated_profiles.append(profile)
+
+        added = len(updated_profiles) - len(self.profiles)
+        if added:
+            if not self._write_profiles(updated_profiles):
+                QMessageBox.warning(
+                    self,
+                    self.tr('profiles_transfer_title'),
+                    self.tr('profiles_import_save_error'),
+                )
+                return
+            self.profiles = updated_profiles
+            self.refresh_profiles()
+
+        if added:
+            message = self.tr('profiles_import_success').format(added, skipped)
+        else:
+            message = self.tr('profiles_import_empty').format(skipped)
+        QMessageBox.information(
+            self,
+            self.tr('profiles_transfer_title'),
+            message,
+        )
+
+    def build_settings_dialog(self):
+        self.settings_dialog = QDialog(self)
+        self.settings_dialog.setWindowTitle(self.tr('settings_title'))
+        self.settings_dialog.setMinimumWidth(360)
+
+        layout = QVBoxLayout(self.settings_dialog)
+
+        def add_separator():
+            separator = QFrame()
+            separator.setFixedHeight(1)
+            separator.setStyleSheet(
+                "background-color: #eef5ff; border: none;"
+            )
+            layout.addWidget(separator)
+
+        language_layout = QHBoxLayout()
+        self.lang_label = QLabel(self.tr('language'))
+        self.lang_label.setObjectName("section")
+        self.lang_combo = QComboBox()
+        self.lang_combo.addItems([self.tr('lang_ru'), self.tr('lang_en')])
+        self.lang_combo.currentIndexChanged.connect(self.on_language_changed)
+        language_layout.addWidget(self.lang_label)
+        language_layout.addWidget(self.lang_combo, 1)
+        layout.addLayout(language_layout)
+
+        theme_layout = QHBoxLayout()
+        self.settings_theme_label = QLabel(self.tr('settings_theme'))
+        self.settings_theme_label.setObjectName("section")
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItem(self.tr('theme_dark'), "dark")
+        self.theme_combo.addItem(self.tr('theme_ocean'), "ocean")
+        self.theme_combo.addItem(self.tr('theme_purple'), "purple")
+        self.theme_combo.addItem(self.tr('theme_forest'), "forest")
+        self.theme_combo.addItem(self.tr('theme_sunset'), "sunset")
+        self.theme_combo.addItem(self.tr('theme_gray'), "gray")
+        self.theme_combo.addItem(self.tr('theme_blue'), "blue")
+        self.theme_combo.addItem(self.tr('theme_red'), "red")
+        self.theme_combo.addItem(self.tr('theme_pink'), "pink")
+        self.theme_combo.currentIndexChanged.connect(self.on_theme_changed)
+        theme_layout.addWidget(self.settings_theme_label)
+        theme_layout.addWidget(self.theme_combo, 1)
+        layout.addLayout(theme_layout)
+
+        add_separator()
+        self.settings_updates_title_label = QLabel(
+            self.tr('settings_updates_section')
+        )
+        self.settings_updates_title_label.setObjectName("section")
+        layout.addWidget(self.settings_updates_title_label)
+        self.update_check_button = QPushButton(self.tr('update_check_button'))
+        self.update_check_button.clicked.connect(
+            lambda: self.check_for_updates(manual=True)
+        )
+        layout.addWidget(self.update_check_button)
+
+        add_separator()
+
+        self.profiles_transfer_title_label = QLabel(
+            self.tr('profiles_transfer_title')
+        )
+        self.profiles_transfer_title_label.setObjectName("section")
+        layout.addWidget(self.profiles_transfer_title_label)
+
+        self.profiles_export_button = QPushButton(self.tr('profiles_export'))
+        self.profiles_export_button.clicked.connect(self.export_profiles)
+        layout.addWidget(self.profiles_export_button)
+
+        self.profiles_import_button = QPushButton(self.tr('profiles_import'))
+        self.profiles_import_button.clicked.connect(self.import_profiles)
+        layout.addWidget(self.profiles_import_button)
+
+        add_separator()
+        self.emergency_stop_title_label = QLabel(
+            self.tr('emergency_stop_title')
+        )
+        self.emergency_stop_title_label.setObjectName("section")
+        layout.addWidget(self.emergency_stop_title_label)
+        self.emergency_stop_warning_label = QLabel(
+            self.tr('emergency_stop_warning')
+        )
+        self.emergency_stop_warning_label.setWordWrap(True)
+        self.emergency_stop_warning_label.setStyleSheet(
+            "color: #ffd35c; font-size: 12px;"
+        )
+        layout.addWidget(self.emergency_stop_warning_label)
+        emergency_stop_layout = QHBoxLayout()
+        self.emergency_stop_key_edit = QLineEdit(self.emergency_stop_key)
+        self.emergency_stop_key_edit.setReadOnly(True)
+        self.emergency_stop_assign_button = QPushButton(
+            self.tr('emergency_stop_assign')
+        )
+        self.emergency_stop_assign_button.clicked.connect(
+            self.bind_emergency_stop_key
+        )
+        emergency_stop_layout.addWidget(self.emergency_stop_key_edit, 1)
+        emergency_stop_layout.addWidget(self.emergency_stop_assign_button)
+        layout.addLayout(emergency_stop_layout)
+
+        layout.addStretch()
+        add_separator()
+
+        self.settings_developer_label = QLabel(self.tr('settings_developer'))
+        layout.addWidget(self.settings_developer_label)
+        self.settings_developer_discord_label = QLabel(
+            self.tr('settings_developer_discord')
+        )
+        self.settings_developer_discord_label.setTextInteractionFlags(
+            Qt.TextSelectableByMouse
+        )
+        layout.addWidget(self.settings_developer_discord_label)
+        self.settings_version_label = QLabel(
+            self.tr('settings_version').format(APP_VERSION)
+        )
+        self.settings_version_label.setStyleSheet("color: #91a4ba;")
+        layout.addWidget(self.settings_version_label)
+
+        buttons = QDialogButtonBox()
+        self.settings_close_button = buttons.addButton(
+            self.tr('dialog_close'),
+            QDialogButtonBox.RejectRole,
+        )
+        self.settings_close_button.clicked.connect(self.settings_dialog.reject)
+        layout.addWidget(buttons)
+        self.settings_dialog.setMinimumHeight(520)
+        self.apply_theme()
 
     def create_settings_panel(self):
         panel = QFrame()
@@ -1122,7 +2022,9 @@ class MainWindow(QMainWindow):
         sequence_buttons.addWidget(self.sequence_apply_btn, 1)
         layout.addLayout(sequence_buttons)
 
-        self.random_interval = QCheckBox("Включить случайный интервал")
+        self.random_interval = CheckmarkCheckBox(
+            self.tr('label_random_interval')
+        )
         self.random_interval.setChecked(True)
         self.random_interval.stateChanged.connect(self.update_random_interval_ui)
         layout.addWidget(self.random_interval)
@@ -1332,7 +2234,21 @@ class MainWindow(QMainWindow):
     # ОБРАБОТЧИКИ НАЖАТИЙ И СЛУШАТЕЛИ PYNPUT (исправлены)
     # ==========================================================
     def on_key_press(self, key):
-        if key == keyboard.Key.esc:
+        key_token = self._normalize_key_to_str(key)
+        with self.hotkey_lock:
+            if self.waiting_for_emergency_key:
+                previous_key = self.emergency_stop_key
+                self.emergency_stop_key = key_token
+                self.waiting_for_emergency_key = False
+                self.emergency_stop_key_signal.emit(key_token)
+                self.settings_save_signal.emit()
+                captured_emergency_key = True
+                emergency_stop_pressed = key_token == previous_key
+            else:
+                captured_emergency_key = False
+                emergency_stop_pressed = key_token == self.emergency_stop_key
+
+        if emergency_stop_pressed:
             with self.hotkey_lock:
                 self.waiting_for_click_key = False
                 self.waiting_for_start_key = False
@@ -1341,6 +2257,16 @@ class MainWindow(QMainWindow):
             if self.sequence_input_active or self.waiting_for_sequence_input:
                 self._stop_sequence_recording()
             self.stop_request_signal.emit()
+            return
+        if captured_emergency_key:
+            return
+
+        if key_token == "ESC":
+            with self.hotkey_lock:
+                self.waiting_for_click_key = False
+                self.waiting_for_start_key = False
+                self.waiting_for_stop_key = False
+                self.binding_capture_keys.clear()
             return
 
         # Не запускаем бинды от синтетических событий, но продолжаем их отслеживать.
@@ -1961,6 +2887,31 @@ class MainWindow(QMainWindow):
             self.waiting_for_start_key = False
         self.hk_stop_edit.setText(self.tr('capture_hotkey'))
 
+    def bind_emergency_stop_key(self):
+        self._ensure_listeners_started()
+        with self.hotkey_lock:
+            self.binding_capture_keys.clear()
+            self.waiting_for_emergency_key = True
+            self.waiting_for_start_key = False
+            self.waiting_for_stop_key = False
+            self.waiting_for_click_key = False
+        self.emergency_stop_key_edit.setText(
+            self.tr('emergency_stop_capture')
+        )
+        self.emergency_stop_assign_button.setText(
+            self.tr('emergency_stop_capture')
+        )
+
+    @Slot(str)
+    def _set_emergency_stop_key_label(self, key_name):
+        self.emergency_stop_key_edit.setText(key_name)
+        self.emergency_stop_assign_button.setText(
+            self.tr('emergency_stop_assign')
+        )
+        self.stop_btn.setText(
+            self.tr('button_stop').format(self.emergency_stop_key)
+        )
+
     def enable_hotkeys(self):
         self._ensure_listeners_started()
         self.hotkeys_enabled = True
@@ -2072,7 +3023,14 @@ class MainWindow(QMainWindow):
     @Slot(str, str)
     def _set_status(self, text, color):
         self.status_label.setText(text)
-        self.status_label.setStyleSheet(f"color: {color}; font-weight: 700;")
+        self._status_base_color = color
+        status_color = THEME_COLOR_MAPS[self.theme].get(
+            color.lower(),
+            color,
+        )
+        self.status_label.setStyleSheet(
+            f"color: {status_color}; font-weight: 700;"
+        )
 
     @Slot(str)
     def _set_hotkey_label(self, text):
@@ -2104,6 +3062,7 @@ class MainWindow(QMainWindow):
             widget = ProfileWidget(p, self.apply_profile, self.edit_profile, self.delete_profile, parent=self)
             self.profile_container.addWidget(widget)
         self.profile_container.addStretch()
+        self.apply_theme()
 
     def add_profile(self):
         new_p = {
@@ -2122,6 +3081,7 @@ class MainWindow(QMainWindow):
 
     def edit_profile(self, profile):
         dialog = ProfileEditDialog(profile, self)
+        self.apply_theme()
         if dialog.exec() == QDialog.Accepted:
             updated = dialog.get_profile()
             idx = self.profiles.index(profile)
@@ -2260,7 +3220,7 @@ class MainWindow(QMainWindow):
                 else self._key_to_str(self.click_key)
             )
             data = {
-                "settings_version": 3,
+                "settings_version": 5,
                 "window": {"width": self.width(), "height": self.height()},
                 "mode_idx": self.mode.currentIndex(),
                 "min_int": self._interval_value(self.min_interval_edit),
@@ -2270,8 +3230,10 @@ class MainWindow(QMainWindow):
                 "seq_raw": self.sequence_edit.toPlainText(),
                 "random_i": self.random_interval.isChecked(),
                 "lang": self.language,
+                "theme": self.theme,
                 "start_hotkey": start_str,
                 "stop_hotkey": stop_str,
+                "emergency_stop_key": self.emergency_stop_key,
                 "click_key": click_key_str,
                 "click_key_type": self.click_key_type,
                 "hotkeys_enabled": self.hotkeys_enabled,
@@ -2329,6 +3291,7 @@ class MainWindow(QMainWindow):
             with open(settings_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
             legacy_settings = data.get("settings_version", 1) < 3
+            settings_upgrade = data.get("settings_version", 1) < 5
             if legacy_settings:
                 data = {
                     "window": {"width": 1200, "height": 780},
@@ -2340,8 +3303,10 @@ class MainWindow(QMainWindow):
                     "seq_raw": "",
                     "random_i": True,
                     "lang": "ru",
+                    "theme": "dark",
                     "start_hotkey": "F6",
                     "stop_hotkey": "F7",
+                    "emergency_stop_key": "ESC",
                     "click_key": "SPACE",
                     "click_key_type": "keyboard",
                     "hotkeys_enabled": True,
@@ -2356,10 +3321,27 @@ class MainWindow(QMainWindow):
             self.sequence_edit.setPlainText(data.get("seq_raw", ""))
             self.random_interval.setChecked(data.get("random_i", True))
             self.language = data.get("lang", "ru")
+            stored_theme = data.get("theme", "dark")
+            self.theme = (
+                stored_theme
+                if isinstance(stored_theme, str)
+                and stored_theme in THEME_COLOR_MAPS
+                else "dark"
+            )
             start_str = data.get("start_hotkey", "F6")
             stop_str = data.get("stop_hotkey", "F7")
             self.start_hotkey = self._parse_hotkey_string(start_str)
             self.stop_hotkey = self._parse_hotkey_string(stop_str)
+            emergency_stop_key = data.get("emergency_stop_key", "ESC")
+            if (
+                not isinstance(emergency_stop_key, str)
+                or not emergency_stop_key.strip()
+                or "+" in emergency_stop_key
+            ):
+                emergency_stop_key = "ESC"
+            self.emergency_stop_key = self._normalize_key_name(
+                emergency_stop_key
+            )
             self.hk_start_edit.setText(start_str)
             self.hk_stop_edit.setText(stop_str)
             click_key_str = data.get("click_key", "SPACE")
@@ -2375,7 +3357,8 @@ class MainWindow(QMainWindow):
             self.hotkeys_enabled = data.get("hotkeys_enabled", True)
             self.update_hotkey_ui()
             self.update_language()
-            if settings_file != SETTINGS_FILE or legacy_settings:
+            self.apply_theme()
+            if settings_file != SETTINGS_FILE or settings_upgrade:
                 self.save_settings()
         except Exception:
             pass
