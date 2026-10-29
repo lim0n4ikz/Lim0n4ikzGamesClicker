@@ -1,21 +1,5 @@
 # 🍋 Lim0n4ikzGames Clicker
 
-<p align="center">
-  <img src="lim0n4ikzgames.ico" width="100" alt="Lim0n4ikzGames Clicker">
-</p>
-
-<h3 align="center">
-  A Smart Tool for Automating Repetitive Actions
-</h3>
-
-<p align="center">
-  Keyboard and mouse automation for gaming, work, and everyday tasks.
-</p>
-
-<p align="center">
-  🇬🇧 <b>English</b> | <a href="README.ru.md">🇷🇺 Русский</a>
-</p>
-
 **Lim0n4ikzGames Clicker** is an automatic clicker for Windows with support for keyboard keys, mouse buttons, sequences, and key combinations.
 
 The application allows you to automate repetitive actions using customizable intervals, hotkeys, and profiles.
@@ -44,7 +28,7 @@ The application allows you to automate repetitive actions using customizable int
 ## 🖥️ Screenshot
 
 <p align="center">
-  <img src="screenshots/main.png" alt="Lim0n4ikzGames Clicker" width="700">
+  <img src="screenshots/main.en.png" alt="Lim0n4ikzGames Clicker" width="700">
 </p>
 
 ---
@@ -266,27 +250,38 @@ After installation, the application is ready to use.
 
 ## 🔄 Update checks
 
-The application checks the `versions.json` manifest in the GitHub `main` branch at startup. When a newer version is available, it displays the changelog and opens the GitHub release download page when the user chooses **Update**. The download and installation are started manually; the installer replaces application files while user settings and profiles remain in `%LOCALAPPDATA%\Lim0n4ikzGamesClicker`.
+On startup, the application checks [`versions.json`](https://github.com/lim0n4ikz/Lim0n4ikzGamesClicker/blob/main/versions.json) in the GitHub default branch. If a newer version is available, it displays the changes for every release after the installed version and offers to open the installer download page.
 
-To publish a release, update `APP_VERSION` in `main.py`, `MyAppVersion` in `Lim0n4ikzGamesClicker.iss`, and `latest_version` and the localized changelog in `versions.json`. Publish the installer as `Lim0n4ikzGamesClickerSetup.exe` on GitHub Releases. Keep previous changelog entries so users can see all changes since their installed version.
+To publish an update:
 
-## 📋 Profile import and export
+1. Bump `APP_VERSION` in `main.py` and `MyAppVersion` in `Lim0n4ikzGamesClicker.iss` for the next release.
+2. Update `latest_version` and the installer URL in `versions.json`.
+3. Add the new version to `releases`, including `changes.ru` and `changes.en`. Keep previous release entries so users on older versions can see the full changelog.
+4. Publish the installer on GitHub Releases at the URL specified by `download_url`.
 
-Use the **Settings** dialog to export profiles to a shareable JSON file or import profiles from another user. Existing profiles are preserved; imported profiles with duplicate names are skipped. Import files must be no larger than 5 MB.
+---
+
+## 📋 Importing and exporting profiles
+
+Open Settings using the gear button and choose **Export profiles** or **Import profiles**. Export saves profiles to a shareable JSON file. Import keeps existing profiles and skips profiles whose names already exist. Import files must use the application's JSON profile format and be no larger than 5 MB.
+
+---
 
 ## 🎨 Application settings
 
-Settings include Russian and English languages, nine color themes, a manual update check, profile import and export, and a configurable emergency stop key. The emergency key remains active when regular hotkeys are disabled; choose a dedicated key such as Pause/Break or F12. The selected language, theme, and emergency key are saved between launches.
-
-## 🧪 Safe test launch
-
-Run `run_test.bat` from the project folder to launch the source version with separate test settings and profiles in `%LOCALAPPDATA%\Lim0n4ikzGamesClicker-Test`. It does not test the installer.
+Settings let you choose the dark, turquoise, purple, green, orange, gray, blue, red, or pink theme. Settings also include a manual update check, profile import and export, and emergency stop key assignment. The emergency key is always active, even when regular hotkeys are disabled; use a dedicated key such as Pause/Break or F12, not the start key or one frequently used in a game. The selected theme, language, and emergency key are saved between launches. Developer information and Discord are shown at the bottom.
 
 ---
 
 # 🛠️ Building from Source
 
 If you want to build the application yourself, you can use PyInstaller.
+
+## 🧪 Safe test launch
+
+Run `run_test.bat` from the project folder. It uses the current source code and stores test settings and profiles separately in `%LOCALAPPDATA%\Lim0n4ikzGamesClicker-Test`. On first launch, the test copy reads the project's existing settings and profiles, but subsequent changes are saved only to the test folder. The original `settings.json` and `profiles.json` are not modified.
+
+This tests the source application, not the installer. To safely test an installer, use a separate Windows account.
 
 ## Requirements
 
@@ -449,11 +444,7 @@ It helps the project grow and shows that the application is useful to the commun
 
 ## 📄 License
 
-**Lim0n4ikzGames Clicker** is distributed under the **Lim0n4ikzGames Clicker Non-Commercial License**.
-
-**Commercial use, selling, reselling, paid distribution, and inclusion in commercial projects are prohibited without prior written permission from the copyright holder.**
-
-See the [`LICENSE`](LICENSE.md) file for the complete terms.
+No license is specified in the source code. If you choose a license for the project, add it here.
 
 ---
 
