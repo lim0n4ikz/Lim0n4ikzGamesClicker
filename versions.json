@@ -1,5 +1,5 @@
 {
-  "latest_version": "2.1",
+  "latest_version": "2.2",
   "download_url": "https://github.com/lim0n4ikz/Lim0n4ikzGamesClicker/releases/latest/download/Lim0n4ikzGamesClickerSetup.exe",
   "releases": [
     {
@@ -39,6 +39,33 @@
           "The selected language, theme, and emergency stop key are saved between launches.",
           "Reorganized Settings into clearly separated sections; developer information, Discord, and the application version appear at the bottom.",
           "Profile cards show a single interval value instead of a range when the minimum and maximum are equal."
+        ]
+      }
+    },
+    {
+      "version": "2.2",
+      "changes": {
+        "ru": [
+          "Добавлена возможность выбирать отдельные профили для экспорта или экспортировать их все; выбранные пункты отмечаются галочкой ✔️.",
+          "Исправлен импорт профилей с совпадающими названиями: теперь добавляются дополнительные профили с уникальной пометкой, например «(импорт 2)».",
+          "Добавлен поиск профиля по названию с помощью кнопки-лупы рядом со списком профилей.",
+          "Добавлена временная метка в имя файла экспорта в формате ДДММГГЧЧММ, чтобы файлы разных экспортов было легко различать.",
+          "При импорте 5 и более профилей показывается предупреждение с возможностью отменить импорт.",
+          "В настройках добавлено массовое управление профилями: выбор и удаление нескольких профилей, выбор всех или снятие выделения; поиск не сбрасывает выделение.",
+          "Малые значения интервала в профилях отображаются обычными десятичными числами, а не в экспоненциальной записи.",
+          "Профили с одинаковыми минимальным и максимальным интервалами сохраняются без случайного режима; в редакторе можно включить его и задать разные границы.",
+          "При импорте 5 и более профилей можно выбрать, какие профили импортировать; для каждого показаны клавиша, режим и интервал."
+        ],
+        "en": [
+          "Added the ability to select individual profiles for export or export them all; selected items are marked with a ✔️ check mark.",
+          "Fixed profile import for duplicate names: additional profiles are now added with a unique marker, such as “(import 2)”.",
+          "Added profile name search using the magnifying-glass button next to the profile list.",
+          "Added a timestamp to exported filenames in DDMMYYHHMM format, making files from different exports easy to distinguish.",
+          "Importing five or more profiles now shows a warning that lets the user cancel the import.",
+          "Added bulk profile management in Settings: select and delete multiple profiles, select all or clear the selection; searching does not clear the selection.",
+          "Small profile interval values are displayed as regular decimal numbers instead of scientific notation.",
+          "Profiles with equal minimum and maximum intervals are saved without random mode; users can enable it in the editor and set different bounds.",
+          "When importing five or more profiles, users can choose which profiles to import; each entry shows its key, mode, and interval."
         ]
       }
     }

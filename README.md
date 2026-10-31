@@ -263,7 +263,7 @@ To publish an update:
 
 ## 📋 Importing and exporting profiles
 
-Open Settings using the gear button and choose **Export profiles** or **Import profiles**. Export saves profiles to a shareable JSON file. Import keeps existing profiles and skips profiles whose names already exist. Import files must use the application's JSON profile format and be no larger than 5 MB.
+Click the magnifying-glass icon next to the profile list heading and enter a name to find a profile. Open Settings using the gear button and choose **Export profiles** or **Import profiles**. When exporting, select the profiles you want (selected items show a ✔️ check mark) or choose **Select all profiles**, then save the JSON file. The suggested export filename automatically includes the date and time in `DDMMYYHHMM` format without separators, for example `3110260040`. Imported profiles whose names already exist are added with a unique marker, such as **(import 2)**, instead of being skipped. Import files must use the application's JSON profile format and be no larger than 5 MB.
 
 ---
 

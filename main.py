@@ -11,6 +11,8 @@ from urllib.parse import urlparse
 from pathlib import Path
 import threading
 import html
+from datetime import datetime
+from decimal import Decimal, InvalidOperation
 
 from PySide6.QtCore import Qt, QEvent, QTimer, QThread, Signal, Slot, QLocale, QUrl, QObject
 from PySide6.QtGui import (
@@ -42,6 +44,24 @@ class IntervalValidator(QDoubleValidator):
         state, _, _ = super().validate(normalized, position)
         return state, text, position
 
+
+def format_interval_value(value):
+    return format(Decimal(str(value)), "f")
+
+
+def interval_fields_match(minimum_edit, maximum_edit):
+    minimum_text = minimum_edit.text().strip().replace(",", ".")
+    maximum_text = maximum_edit.text().strip().replace(",", ".")
+    if not minimum_text or not maximum_text:
+        return False
+    try:
+        minimum = Decimal(minimum_text)
+        maximum = Decimal(maximum_text)
+    except InvalidOperation:
+        return False
+    return minimum.is_finite() and maximum.is_finite() and minimum == maximum
+
+
 # Для корректного отображения в панели задач Windows
 if sys.platform == "win32":
     import ctypes
@@ -52,7 +72,7 @@ if sys.platform == "win32":
 # ============================================================
 
 APP_NAME = "Lim0n4ikzGames Clicker"
-APP_VERSION = "2.1"
+APP_VERSION = "2.2"
 PROFILE_FILE_FORMAT = "lim0n4ikz-clicker-profiles"
 MAX_PROFILE_FILE_SIZE = 5 * 1024 * 1024
 VERSION_MANIFEST_URL = (
@@ -422,8 +442,15 @@ class ProfileEditDialog(QDialog):
         self.hold_edit = self._create_interval_edit(self.profile.get("hold", 1.0))
         self.between_edit = self._create_interval_edit(self.profile.get("between", 0.2))
         self.random_interval = QCheckBox(parent.tr('label_random_interval'))
-        self.random_interval.setChecked(self.profile.get("random", True))
+        same_bounds = float(self.profile.get("min", 1.0)) == float(
+            self.profile.get("max", 1.0)
+        )
+        self.random_interval.setChecked(
+            self.profile.get("random", True) and not same_bounds
+        )
         self.random_interval.stateChanged.connect(self.update_interval_ui)
+        self.min_edit.textChanged.connect(self.update_interval_ui)
+        self.max_edit.textChanged.connect(self.update_interval_ui)
         self.sequence_edit = QTextEdit(self.profile.get("sequence", ""))
         self.sequence_edit.setMaximumHeight(90)
         self.sequence_edit.installEventFilter(self)
@@ -496,7 +523,7 @@ class ProfileEditDialog(QDialog):
 
     @staticmethod
     def _create_interval_edit(value):
-        edit = QLineEdit(str(max(0.0, float(value))))
+        edit = QLineEdit(format_interval_value(max(0.0, float(value))))
         edit.setValidator(IntervalValidator(edit))
         return edit
 
@@ -524,7 +551,10 @@ class ProfileEditDialog(QDialog):
             "between": self._interval_value(self.between_edit),
             "key": self.parent.profile_key_to_storage(self.key_edit.text()),
             "sequence": self.sequence_edit.toPlainText(),
-            "random": self.random_interval.isChecked(),
+            "random": (
+                self.random_interval.isChecked()
+                and not interval_fields_match(self.min_edit, self.max_edit)
+            ),
         }
 
     def update_interval_ui(self):
@@ -758,23 +788,279 @@ class CheckmarkCheckBox(QCheckBox):
             self,
         )
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        pen = QPen(QColor("#060d16"), 2.2)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        painter.setPen(pen)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(
+            QPen(
+                QColor("#ffffff"),
+                2.2,
+                Qt.SolidLine,
+                Qt.RoundCap,
+                Qt.RoundJoin,
+            )
+        )
         painter.drawLine(
-            indicator.left() + indicator.width() * 0.24,
+            indicator.left() + indicator.width() * 0.25,
             indicator.top() + indicator.height() * 0.52,
             indicator.left() + indicator.width() * 0.43,
-            indicator.top() + indicator.height() * 0.7,
+            indicator.top() + indicator.height() * 0.70,
         )
         painter.drawLine(
             indicator.left() + indicator.width() * 0.43,
-            indicator.top() + indicator.height() * 0.7,
+            indicator.top() + indicator.height() * 0.70,
             indicator.left() + indicator.width() * 0.77,
             indicator.top() + indicator.height() * 0.32,
         )
+
+
+# ============================================================
+# PROFILE SELECTION DIALOG
+# ============================================================
+class ProfileSelectionDialog(QDialog):
+    def __init__(
+        self,
+        profiles,
+        translate,
+        parent=None,
+        title_key='profiles_export',
+        description=None,
+        profile_details=None,
+    ):
+        super().__init__(parent)
+        self.profiles = profiles
+        self.profile_checkboxes = []
+        self.setWindowTitle(translate(title_key))
+        self.setMinimumWidth(500 if profile_details else 360)
+
+        layout = QVBoxLayout(self)
+        if description:
+            description_label = QLabel(description)
+            description_label.setObjectName("section")
+            description_label.setWordWrap(True)
+            layout.addWidget(description_label)
+
+        self.select_all_checkbox = CheckmarkCheckBox(
+            translate('profiles_select_all')
+        )
+        self.select_all_checkbox.setChecked(True)
+        self.select_all_checkbox.clicked.connect(
+            self._set_all_profiles_selected
+        )
+        layout.addWidget(self.select_all_checkbox)
+
+        self.profile_scroll = QScrollArea()
+        self.profile_scroll.setWidgetResizable(True)
+        self.profile_scroll.setFrameShape(QFrame.NoFrame)
+        profile_list = QWidget()
+        profile_list_layout = QVBoxLayout(profile_list)
+        profile_list_layout.setContentsMargins(0, 0, 0, 0)
+        for profile in profiles:
+            checkbox = CheckmarkCheckBox(
+                f'{profile.get("icon", "✨")} {profile["name"]}'
+            )
+            checkbox.setChecked(True)
+            checkbox.stateChanged.connect(self._update_selection_state)
+            self.profile_checkboxes.append(checkbox)
+            if profile_details:
+                profile_row = QWidget()
+                profile_row_layout = QVBoxLayout(profile_row)
+                profile_row_layout.setContentsMargins(0, 3, 0, 6)
+                details_label = QLabel(profile_details(profile))
+                details_label.setWordWrap(True)
+                details_label.setStyleSheet(
+                    "color: #91a4ba; font-size: 11px; padding-left: 29px;"
+                )
+                profile_row_layout.addWidget(checkbox)
+                profile_row_layout.addWidget(details_label)
+                profile_list_layout.addWidget(profile_row)
+            else:
+                profile_list_layout.addWidget(checkbox)
+        profile_list_layout.addStretch()
+        self.profile_scroll.setWidget(profile_list)
+        self.profile_scroll.setMinimumHeight(180)
+        layout.addWidget(self.profile_scroll, 1)
+
+        self.buttons = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+        )
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+        self.buttons.button(QDialogButtonBox.Ok).setText(
+            translate('dialog_ok')
+        )
+        self.buttons.button(QDialogButtonBox.Cancel).setText(
+            translate('dialog_cancel')
+        )
+        layout.addWidget(self.buttons)
+
+    def _set_all_profiles_selected(self, checked):
+        for checkbox in self.profile_checkboxes:
+            checkbox.setChecked(checked)
+        self._update_selection_state()
+
+    def _update_selection_state(self, *_):
+        selected = any(
+            checkbox.isChecked() for checkbox in self.profile_checkboxes
+        )
+        self.select_all_checkbox.setChecked(
+            bool(self.profile_checkboxes)
+            and all(
+                checkbox.isChecked()
+                for checkbox in self.profile_checkboxes
+            )
+        )
+        self.buttons.button(QDialogButtonBox.Ok).setEnabled(selected)
+
+    def selected_profiles(self):
+        return [
+            profile
+            for profile, checkbox in zip(
+                self.profiles,
+                self.profile_checkboxes,
+            )
+            if checkbox.isChecked()
+        ]
+
+
+class ProfileManagementDialog(QDialog):
+    def __init__(self, profiles, translate, parent=None):
+        super().__init__(parent)
+        self.profiles = profiles
+        self.profile_checkboxes = []
+        self.translate = translate
+        self.setWindowTitle(translate('profiles_manage'))
+        self.setMinimumSize(420, 400)
+
+        layout = QVBoxLayout(self)
+        selection_layout = QHBoxLayout()
+        select_all_button = QPushButton(
+            translate('profiles_manage_select_all')
+        )
+        select_all_button.clicked.connect(
+            lambda: self._set_all_selected(True)
+        )
+        deselect_all_button = QPushButton(
+            translate('profiles_manage_deselect_all')
+        )
+        deselect_all_button.clicked.connect(
+            lambda: self._set_all_selected(False)
+        )
+        selection_layout.addWidget(select_all_button)
+        selection_layout.addWidget(deselect_all_button)
+        layout.addLayout(selection_layout)
+
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText(
+            translate('profiles_search_placeholder')
+        )
+        self.search_edit.textChanged.connect(self._filter_profiles)
+        layout.addWidget(self.search_edit)
+
+        self.empty_label = QLabel(translate('profiles_manage_no_profiles'))
+        self.empty_label.setAlignment(Qt.AlignCenter)
+        self.empty_label.setStyleSheet("color: #91a4ba; padding: 12px;")
+        layout.addWidget(self.empty_label)
+
+        self.search_empty_label = QLabel(
+            translate('profiles_search_empty')
+        )
+        self.search_empty_label.setAlignment(Qt.AlignCenter)
+        self.search_empty_label.setStyleSheet(
+            "color: #91a4ba; padding: 12px;"
+        )
+        self.search_empty_label.hide()
+        layout.addWidget(self.search_empty_label)
+
+        profile_scroll = QScrollArea()
+        profile_scroll.setWidgetResizable(True)
+        profile_scroll.setFrameShape(QFrame.NoFrame)
+        profile_list = QWidget()
+        profile_list_layout = QVBoxLayout(profile_list)
+        profile_list_layout.setContentsMargins(0, 0, 0, 0)
+        for profile in profiles:
+            checkbox = CheckmarkCheckBox(
+                f'{profile.get("icon", "✨")} {profile.get("name", "")}'
+            )
+            checkbox.stateChanged.connect(self._update_selection_state)
+            self.profile_checkboxes.append(checkbox)
+            profile_list_layout.addWidget(checkbox)
+        profile_list_layout.addStretch()
+        profile_scroll.setWidget(profile_list)
+        profile_scroll.setMinimumHeight(180)
+        layout.addWidget(profile_scroll, 1)
+
+        self.buttons = QDialogButtonBox(QDialogButtonBox.Cancel)
+        self.delete_button = self.buttons.addButton(
+            translate('profiles_manage_delete_selected').format(0),
+            QDialogButtonBox.DestructiveRole,
+        )
+        self.delete_button.clicked.connect(self._confirm_delete)
+        self.buttons.rejected.connect(self.reject)
+        self.buttons.button(QDialogButtonBox.Cancel).setText(
+            translate('dialog_cancel')
+        )
+        layout.addWidget(self.buttons)
+
+        self._update_selection_state()
+
+    def _set_all_selected(self, selected):
+        for checkbox in self.profile_checkboxes:
+            checkbox.setChecked(selected)
+        self._update_selection_state()
+
+    def _filter_profiles(self, query):
+        normalized_query = query.strip().casefold()
+        visible_count = 0
+        for profile, checkbox in zip(
+            self.profiles,
+            self.profile_checkboxes,
+        ):
+            matches = normalized_query in profile.get("name", "").casefold()
+            checkbox.setVisible(matches)
+            visible_count += int(matches)
+        self.empty_label.setVisible(not self.profiles)
+        self.search_empty_label.setVisible(
+            bool(normalized_query) and visible_count == 0
+        )
+
+    def _update_selection_state(self, *_):
+        selected_count = sum(
+            checkbox.isChecked() for checkbox in self.profile_checkboxes
+        )
+        self.delete_button.setText(
+            self.translate('profiles_manage_delete_selected').format(
+                selected_count
+            )
+        )
+        self.delete_button.setEnabled(selected_count > 0)
+        self.empty_label.setVisible(not self.profiles)
+
+    def _confirm_delete(self):
+        selected_count = sum(
+            checkbox.isChecked() for checkbox in self.profile_checkboxes
+        )
+        if not selected_count:
+            return
+        confirmation = QMessageBox.question(
+            self,
+            self.translate('profiles_manage'),
+            self.translate('profiles_manage_confirm_delete').format(
+                selected_count
+            ),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirmation == QMessageBox.Yes:
+            self.accept()
+
+    def selected_profiles(self):
+        return [
+            profile
+            for profile, checkbox in zip(
+                self.profiles,
+                self.profile_checkboxes,
+            )
+            if checkbox.isChecked()
+        ]
 
 
 # ============================================================
@@ -819,12 +1105,14 @@ class ProfileWidget(QFrame):
             or float(minimum_interval) == float(maximum_interval)
         ):
             interval_text = (
-                f'{self.parent.tr("interval")}: {minimum_interval} sec.'
+                f'{self.parent.tr("interval")}: '
+                f'{format_interval_value(minimum_interval)} sec.'
             )
         else:
             interval_text = (
-                f'{self.parent.tr("interval")}: {minimum_interval} — '
-                f'{maximum_interval} sec.'
+                f'{self.parent.tr("interval")}: '
+                f'{format_interval_value(minimum_interval)} — '
+                f'{format_interval_value(maximum_interval)} sec.'
             )
         interval = QLabel(interval_text)
         mode.setWordWrap(True)
@@ -1005,6 +1293,15 @@ class MainWindow(QMainWindow):
                 with urllib.request.urlopen(request, timeout=8) as response:
                     manifest = json.loads(response.read().decode("utf-8"))
                 update = parse_update_manifest(manifest, APP_VERSION)
+                if (
+                    update is None
+                    and version_key(APP_VERSION)
+                    > version_key(manifest["latest_version"])
+                ):
+                    update = {
+                        "local_version_is_newer": True,
+                        "latest_version": manifest["latest_version"],
+                    }
                 signals.check_finished.emit(update)
             except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
                 signals.check_failed.emit(str(error))
@@ -1020,6 +1317,17 @@ class MainWindow(QMainWindow):
         self.update_check_started = False
         manual_check = self.manual_update_check_pending
         self.manual_update_check_pending = False
+        if update and update.get("local_version_is_newer"):
+            if manual_check:
+                QMessageBox.information(
+                    self,
+                    self.tr("update_check_title"),
+                    self.tr("update_custom_version").format(
+                        APP_VERSION,
+                        update["latest_version"],
+                    ),
+                )
+            return
         if update:
             self.show_update_dialog(update)
         elif manual_check:
@@ -1104,13 +1412,41 @@ class MainWindow(QMainWindow):
                 'update_check_button': "Проверить обновления",
                 'update_check_title': "Проверка обновлений",
                 'update_current_version': "У вас установлена актуальная версия {}.",
+                'update_custom_version': (
+                    "Вы заглянули в будущее! У вас версия {}, а официальный "
+                    "релиз пока только {}. Кажется, вы тестируете свежую сборку."
+                ),
                 'update_check_error': "Не удалось проверить обновления. Проверьте подключение к интернету и попробуйте ещё раз.",
                 'profiles_transfer_title': "Профили",
+                'profiles_manage': "Управление профилями",
+                'profiles_manage_button': "Управление профилями",
+                'profiles_manage_select_all': "Выбрать все",
+                'profiles_manage_deselect_all': "Снять выделение",
+                'profiles_manage_delete_selected': "Удалить выбранные ({})",
+                'profiles_manage_confirm_delete': (
+                    "Удалить выбранные профили: {}?"
+                ),
+                'profiles_manage_no_profiles': "Профилей пока нет.",
+                'profiles_manage_save_error': (
+                    "Не удалось сохранить изменения профилей."
+                ),
                 'profiles_export': "Экспортировать профили",
                 'profiles_import': "Импортировать профили",
                 'profiles_export_success': "Профили экспортированы.",
-                'profiles_import_success': "Импортировано профилей: {}. Пропущено дубликатов: {}.",
-                'profiles_import_empty': "В файле нет новых профилей. Пропущено дубликатов: {}.",
+                'profiles_export_empty': "Нет профилей для экспорта.",
+                'profiles_select_all': "Выбрать все профили",
+                'profiles_search_tooltip': "Найти профиль",
+                'profiles_search_placeholder': "Поиск профиля...",
+                'profiles_search_empty': "Профили не найдены.",
+                'profiles_import_success': "Импортировано профилей: {}. Переименовано совпадающих профилей: {}.",
+                'profiles_import_empty': "В файле нет профилей для импорта.",
+                'profiles_import_confirm_many': (
+                    "Будет импортировано профилей: {}. Продолжить?"
+                ),
+                'profiles_import_profile_details': (
+                    "Клавиша: {} · Режим: {} · Интервал: {} сек."
+                ),
+                'profile_import_copy_suffix': " (импорт {})",
                 'profiles_export_error': "Не удалось экспортировать профили:\n{}",
                 'profiles_import_error': "Не удалось импортировать профили:\n{}",
                 'profiles_import_save_error': "Не удалось сохранить импортированные профили.",
@@ -1227,13 +1563,42 @@ class MainWindow(QMainWindow):
                 'update_check_button': "Check for updates",
                 'update_check_title': "Update check",
                 'update_current_version': "You are using the latest version {}.",
+                'update_custom_version': (
+                    "You're ahead of the future! You're running version {}, "
+                    "while the latest official release is {}. Looks like "
+                    "you're testing a fresh build."
+                ),
                 'update_check_error': "Could not check for updates. Check your internet connection and try again.",
                 'profiles_transfer_title': "Profiles",
+                'profiles_manage': "Manage profiles",
+                'profiles_manage_button': "Manage profiles",
+                'profiles_manage_select_all': "Select all",
+                'profiles_manage_deselect_all': "Clear selection",
+                'profiles_manage_delete_selected': "Delete selected ({})",
+                'profiles_manage_confirm_delete': (
+                    "Delete selected profiles: {}?"
+                ),
+                'profiles_manage_no_profiles': "There are no profiles yet.",
+                'profiles_manage_save_error': (
+                    "Could not save the profile changes."
+                ),
                 'profiles_export': "Export profiles",
                 'profiles_import': "Import profiles",
                 'profiles_export_success': "Profiles exported.",
-                'profiles_import_success': "Imported profiles: {}. Skipped duplicates: {}.",
-                'profiles_import_empty': "No new profiles in the file. Skipped duplicates: {}.",
+                'profiles_export_empty': "There are no profiles to export.",
+                'profiles_select_all': "Select all profiles",
+                'profiles_search_tooltip': "Search profiles",
+                'profiles_search_placeholder': "Search profiles...",
+                'profiles_search_empty': "No profiles found.",
+                'profiles_import_success': "Imported profiles: {}. Renamed profiles with duplicate names: {}.",
+                'profiles_import_empty': "There are no profiles to import.",
+                'profiles_import_confirm_many': (
+                    "Profiles to import: {}. Continue?"
+                ),
+                'profiles_import_profile_details': (
+                    "Key: {} · Mode: {} · Interval: {} sec."
+                ),
+                'profile_import_copy_suffix': " (import {})",
                 'profiles_export_error': "Could not export profiles:\n{}",
                 'profiles_import_error': "Could not import profiles:\n{}",
                 'profiles_import_save_error': "Could not save the imported profiles.",
@@ -1369,6 +1734,9 @@ class MainWindow(QMainWindow):
         self.profiles_transfer_title_label.setText(
             self.tr('profiles_transfer_title')
         )
+        self.profiles_manage_button.setText(
+            self.tr('profiles_manage_button')
+        )
         self.profiles_export_button.setText(self.tr('profiles_export'))
         self.profiles_import_button.setText(self.tr('profiles_import'))
         self.settings_close_button.setText(self.tr('dialog_close'))
@@ -1404,6 +1772,15 @@ class MainWindow(QMainWindow):
         self.update_random_interval_ui()
         self.profiles_title_label.setText(self.tr('profiles_title'))
         self.add_profile_btn.setText(self.tr('add_profile'))
+        self.profiles_search_button.setToolTip(
+            self.tr('profiles_search_tooltip')
+        )
+        self.profiles_search_edit.setPlaceholderText(
+            self.tr('profiles_search_placeholder')
+        )
+        self.profiles_search_empty_label.setText(
+            self.tr('profiles_search_empty')
+        )
         self.lang_label.setText(self.tr('language'))
         # Обновление выпадающего списка режимов
         self.mode.blockSignals(True)
@@ -1601,11 +1978,64 @@ class MainWindow(QMainWindow):
     def show_settings_dialog(self):
         self.settings_dialog.exec()
 
+    def manage_profiles(self):
+        dialog = ProfileManagementDialog(
+            self.profiles,
+            self.tr,
+            self,
+        )
+        self.apply_theme()
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        selected_ids = {
+            id(profile) for profile in dialog.selected_profiles()
+        }
+        updated_profiles = [
+            profile
+            for profile in self.profiles
+            if id(profile) not in selected_ids
+        ]
+        if not self._write_profiles(updated_profiles):
+            QMessageBox.warning(
+                self,
+                self.tr('profiles_transfer_title'),
+                self.tr('profiles_manage_save_error'),
+            )
+            return
+
+        self.profiles = updated_profiles
+        self.refresh_profiles()
+
     def export_profiles(self):
+        if not self.profiles:
+            QMessageBox.information(
+                self,
+                self.tr('profiles_transfer_title'),
+                self.tr('profiles_export_empty'),
+            )
+            return
+
+        selection_dialog = ProfileSelectionDialog(
+            self.profiles,
+            self.tr,
+            self,
+        )
+        self.apply_theme()
+        if selection_dialog.exec() != QDialog.Accepted:
+            return
+        selected_profiles = selection_dialog.selected_profiles()
+        if not selected_profiles:
+            return
+        timestamp = datetime.now().strftime("%d%m%y%H%M")
+        filename = f"clicker-profiles-{timestamp}.json"
+        self._export_profiles(selected_profiles, filename)
+
+    def _export_profiles(self, profiles, filename):
         file_path, _ = QFileDialog.getSaveFileName(
             self,
             self.tr('profiles_export'),
-            "clicker-profiles.json",
+            filename,
             self.tr('profiles_file_filter'),
         )
         if not file_path:
@@ -1614,7 +2044,7 @@ class MainWindow(QMainWindow):
         payload = {
             "format": PROFILE_FILE_FORMAT,
             "schema_version": 1,
-            "profiles": self.profiles,
+            "profiles": profiles,
         }
         try:
             with open(file_path, "w", encoding="utf-8") as profile_file:
@@ -1710,8 +2140,38 @@ class MainWindow(QMainWindow):
             "between": between,
             "key": key.strip(),
             "sequence": sequence,
-            "random": random_interval,
+            "random": random_interval and minimum != maximum,
         }
+
+    def _format_import_profile_details(self, profile):
+        mode_keys = {
+            self.MODE_INSTANT: 'mode_instant',
+            self.MODE_HOLD: 'mode_hold',
+            self.MODE_SEQUENCE: 'mode_sequence',
+            self.MODE_COMBO: 'mode_combo',
+        }
+        mode_key = mode_keys.get(profile["mode"])
+        if mode_key is None:
+            for translation_key in mode_keys.values():
+                if any(
+                    profile["mode"] == self.translations[language][translation_key]
+                    for language in ("ru", "en")
+                ):
+                    mode_key = translation_key
+                    break
+        mode = self.tr(mode_key) if mode_key else profile["mode"]
+        minimum = profile["min"]
+        maximum = profile["max"]
+        interval = format_interval_value(minimum)
+        if profile.get("random", True) and minimum != maximum:
+            interval = (
+                f'{interval} — {format_interval_value(maximum)}'
+            )
+        return self.tr('profiles_import_profile_details').format(
+            self.display_key_token(profile["key"]),
+            mode,
+            interval,
+        )
 
     def import_profiles(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -1753,18 +2213,50 @@ class MainWindow(QMainWindow):
             )
             return
 
+        if len(profiles_to_import) >= 5:
+            selection_dialog = ProfileSelectionDialog(
+                profiles_to_import,
+                self.tr,
+                self,
+                title_key='profiles_import',
+                description=self.tr(
+                    'profiles_import_confirm_many',
+                    len(profiles_to_import),
+                ),
+                profile_details=self._format_import_profile_details,
+            )
+            self.apply_theme()
+            if selection_dialog.exec() != QDialog.Accepted:
+                return
+            profiles_to_import = selection_dialog.selected_profiles()
+            if not profiles_to_import:
+                return
+
         existing_names = {
             profile.get("name", "").strip().casefold()
             for profile in self.profiles
             if isinstance(profile.get("name"), str)
         }
         updated_profiles = list(self.profiles)
-        skipped = 0
+        renamed = 0
         for profile in profiles_to_import:
             normalized_name = profile["name"].casefold()
             if normalized_name in existing_names:
-                skipped += 1
-                continue
+                original_name = profile["name"]
+                suffix_number = 2
+                while True:
+                    suffix = self.tr(
+                        'profile_import_copy_suffix',
+                        suffix_number,
+                    )
+                    candidate_name = f"{original_name}{suffix}"
+                    normalized_candidate = candidate_name.casefold()
+                    if normalized_candidate not in existing_names:
+                        profile["name"] = candidate_name
+                        normalized_name = normalized_candidate
+                        renamed += 1
+                        break
+                    suffix_number += 1
             existing_names.add(normalized_name)
             updated_profiles.append(profile)
 
@@ -1781,9 +2273,9 @@ class MainWindow(QMainWindow):
             self.refresh_profiles()
 
         if added:
-            message = self.tr('profiles_import_success').format(added, skipped)
+            message = self.tr('profiles_import_success').format(added, renamed)
         else:
-            message = self.tr('profiles_import_empty').format(skipped)
+            message = self.tr('profiles_import_empty')
         QMessageBox.information(
             self,
             self.tr('profiles_transfer_title'),
@@ -1852,6 +2344,12 @@ class MainWindow(QMainWindow):
         )
         self.profiles_transfer_title_label.setObjectName("section")
         layout.addWidget(self.profiles_transfer_title_label)
+
+        self.profiles_manage_button = QPushButton(
+            self.tr('profiles_manage_button')
+        )
+        self.profiles_manage_button.clicked.connect(self.manage_profiles)
+        layout.addWidget(self.profiles_manage_button)
 
         self.profiles_export_button = QPushButton(self.tr('profiles_export'))
         self.profiles_export_button.clicked.connect(self.export_profiles)
@@ -2027,6 +2525,12 @@ class MainWindow(QMainWindow):
         )
         self.random_interval.setChecked(True)
         self.random_interval.stateChanged.connect(self.update_random_interval_ui)
+        self.min_interval_edit.textChanged.connect(
+            self.update_random_interval_ui
+        )
+        self.max_interval_edit.textChanged.connect(
+            self.update_random_interval_ui
+        )
         layout.addWidget(self.random_interval)
 
         # ---- Бинды горячих клавиш ----
@@ -2123,13 +2627,42 @@ class MainWindow(QMainWindow):
         header = QHBoxLayout()
         self.profiles_title_label = QLabel(self.tr('profiles_title'))
         self.profiles_title_label.setObjectName("section")
+        self.profiles_search_button = QPushButton("🔍")
+        self.profiles_search_button.setFixedSize(44, 44)
+        self.profiles_search_button.setStyleSheet("padding: 0px;")
+        self.profiles_search_button.setFont(QFont("Segoe UI Emoji", 14))
+        self.profiles_search_button.setToolTip(
+            self.tr('profiles_search_tooltip')
+        )
+        self.profiles_search_button.clicked.connect(
+            self.toggle_profile_search
+        )
         self.add_profile_btn = QPushButton(self.tr('add_profile'))
         self.add_profile_btn.setObjectName("blue")
         self.add_profile_btn.clicked.connect(self.add_profile)
         header.addWidget(self.profiles_title_label)
+        header.addWidget(self.profiles_search_button)
         header.addStretch()
         header.addWidget(self.add_profile_btn)
         layout.addLayout(header)
+
+        self.profiles_search_edit = QLineEdit()
+        self.profiles_search_edit.setPlaceholderText(
+            self.tr('profiles_search_placeholder')
+        )
+        self.profiles_search_edit.textChanged.connect(self.filter_profiles)
+        self.profiles_search_edit.hide()
+        layout.addWidget(self.profiles_search_edit)
+
+        self.profiles_search_empty_label = QLabel(
+            self.tr('profiles_search_empty')
+        )
+        self.profiles_search_empty_label.setAlignment(Qt.AlignCenter)
+        self.profiles_search_empty_label.setStyleSheet(
+            "color: #91a4ba; padding: 8px;"
+        )
+        self.profiles_search_empty_label.hide()
+        layout.addWidget(self.profiles_search_empty_label)
 
         self.profile_scroll = QScrollArea()
         self.profile_scroll.setWidgetResizable(True)
@@ -3058,11 +3591,39 @@ class MainWindow(QMainWindow):
             item = self.profile_container.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
+        self.profile_widgets = []
         for p in self.profiles:
             widget = ProfileWidget(p, self.apply_profile, self.edit_profile, self.delete_profile, parent=self)
+            self.profile_widgets.append(widget)
             self.profile_container.addWidget(widget)
         self.profile_container.addStretch()
+        self.filter_profiles(self.profiles_search_edit.text())
         self.apply_theme()
+
+    def toggle_profile_search(self):
+        if self.profiles_search_edit.isVisible():
+            self.profiles_search_edit.clear()
+            self.profiles_search_edit.hide()
+            self.profiles_search_empty_label.hide()
+            self.profiles_search_button.setFocus()
+            return
+        self.profiles_search_edit.show()
+        self.profiles_search_edit.setFocus()
+
+    def filter_profiles(self, query):
+        normalized_query = query.strip().casefold()
+        visible_count = 0
+        for profile, widget in zip(self.profiles, self.profile_widgets):
+            name = profile.get("name", "")
+            matches = (
+                not normalized_query
+                or normalized_query in name.casefold()
+            )
+            widget.setVisible(matches)
+            visible_count += int(matches)
+        self.profiles_search_empty_label.setVisible(
+            bool(normalized_query) and visible_count == 0
+        )
 
     def add_profile(self):
         new_p = {
@@ -3104,15 +3665,29 @@ class MainWindow(QMainWindow):
 
     def apply_profile(self, profile):
         # Обновляем поля интерфейса
-        self.min_interval_edit.setText(str(max(0.0, float(profile["min"]))))
-        self.max_interval_edit.setText(str(max(0.0, float(profile["max"]))))
+        min_signals_blocked = self.min_interval_edit.blockSignals(True)
+        max_signals_blocked = self.max_interval_edit.blockSignals(True)
+        try:
+            self.min_interval_edit.setText(
+                format_interval_value(max(0.0, float(profile["min"])))
+            )
+            self.max_interval_edit.setText(
+                format_interval_value(max(0.0, float(profile["max"])))
+            )
+        finally:
+            self.min_interval_edit.blockSignals(min_signals_blocked)
+            self.max_interval_edit.blockSignals(max_signals_blocked)
         self.hold_time_edit.setText(
             str(max(0.0, float(profile.get("hold", 1.0))))
         )
         self.between_edit.setText(
             str(max(0.0, float(profile.get("between", 0.2))))
         )
-        self.random_interval.setChecked(profile.get("random", True))
+        same_bounds = float(profile["min"]) == float(profile["max"])
+        self.random_interval.setChecked(
+            profile.get("random", True) and not same_bounds
+        )
+        self.update_random_interval_ui()
         m_str = profile["mode"]
         mode_aliases = {
             self.MODE_INSTANT: self.MODE_INSTANT,
@@ -3228,7 +3803,13 @@ class MainWindow(QMainWindow):
                 "hold_t": self._interval_value(self.hold_time_edit),
                 "btw_t": self._interval_value(self.between_edit),
                 "seq_raw": self.sequence_edit.toPlainText(),
-                "random_i": self.random_interval.isChecked(),
+                "random_i": (
+                    self.random_interval.isChecked()
+                    and not interval_fields_match(
+                        self.min_interval_edit,
+                        self.max_interval_edit,
+                    )
+                ),
                 "lang": self.language,
                 "theme": self.theme,
                 "start_hotkey": start_str,
@@ -3314,12 +3895,33 @@ class MainWindow(QMainWindow):
             if "window" in data:
                 self.resize(data["window"]["width"], data["window"]["height"])
             self.mode.setCurrentIndex(data.get("mode_idx", 0))
-            self.min_interval_edit.setText(str(max(0.0, float(data.get("min_int", 0.5)))))
-            self.max_interval_edit.setText(str(max(0.0, float(data.get("max_int", 1.0)))))
+            min_signals_blocked = self.min_interval_edit.blockSignals(True)
+            max_signals_blocked = self.max_interval_edit.blockSignals(True)
+            try:
+                self.min_interval_edit.setText(
+                    format_interval_value(
+                        max(0.0, float(data.get("min_int", 0.5)))
+                    )
+                )
+                self.max_interval_edit.setText(
+                    format_interval_value(
+                        max(0.0, float(data.get("max_int", 1.0)))
+                    )
+                )
+            finally:
+                self.min_interval_edit.blockSignals(min_signals_blocked)
+                self.max_interval_edit.blockSignals(max_signals_blocked)
             self.hold_time_edit.setText(str(max(0.0, float(data.get("hold_t", 1.0)))))
             self.between_edit.setText(str(max(0.0, float(data.get("btw_t", 0.2)))))
             self.sequence_edit.setPlainText(data.get("seq_raw", ""))
-            self.random_interval.setChecked(data.get("random_i", True))
+            same_bounds = interval_fields_match(
+                self.min_interval_edit,
+                self.max_interval_edit,
+            )
+            self.random_interval.setChecked(
+                data.get("random_i", True) and not same_bounds
+            )
+            self.update_random_interval_ui()
             self.language = data.get("lang", "ru")
             stored_theme = data.get("theme", "dark")
             self.theme = (
