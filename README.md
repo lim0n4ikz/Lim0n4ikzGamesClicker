@@ -269,7 +269,7 @@ Click the magnifying-glass icon next to the profile list heading and enter a nam
 
 ## 🎨 Application settings
 
-Settings let you choose the dark, turquoise, purple, green, orange, gray, blue, red, or pink theme. Settings also include a manual update check, profile import and export, and emergency stop key assignment. The emergency key is always active, even when regular hotkeys are disabled; use a dedicated key such as Pause/Break or F12, not the start key or one frequently used in a game. The selected theme, language, and emergency key are saved between launches. Developer information and Discord are shown at the bottom.
+Settings let you choose the dark, turquoise, purple, green, orange, gray, blue, red, or pink theme. Settings also include a manual update check, a “Report a bug (Bug-report)” button that opens the [feedback form](https://forms.gle/MZvS2rtF4Sae8eAV6), profile import and export, and emergency stop key assignment. The emergency key is always active, even when regular hotkeys are disabled; use a dedicated key such as Pause/Break or F12, not the start key or one frequently used in a game. The selected theme, language, and emergency key are saved between launches. Developer information and Discord are shown at the bottom.
 
 ---
 

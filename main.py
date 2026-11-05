@@ -72,7 +72,8 @@ if sys.platform == "win32":
 # ============================================================
 
 APP_NAME = "Lim0n4ikzGames Clicker"
-APP_VERSION = "2.2"
+APP_VERSION = "2.4.1"
+BUG_REPORT_URL = "https://forms.gle/MZvS2rtF4Sae8eAV6"
 PROFILE_FILE_FORMAT = "lim0n4ikz-clicker-profiles"
 MAX_PROFILE_FILE_SIZE = 5 * 1024 * 1024
 VERSION_MANIFEST_URL = (
@@ -1349,6 +1350,15 @@ class MainWindow(QMainWindow):
                     self.tr("update_open_error"),
                 )
 
+    @Slot()
+    def open_bug_report_form(self):
+        if not QDesktopServices.openUrl(QUrl(BUG_REPORT_URL)):
+            QMessageBox.warning(
+                self,
+                self.tr("update_error_title"),
+                self.tr("bug_report_open_error"),
+            )
+
     @Slot(str)
     def log_update_check_failure(self, error):
         self.update_check_started = False
@@ -1417,6 +1427,8 @@ class MainWindow(QMainWindow):
                     "релиз пока только {}. Кажется, вы тестируете свежую сборку."
                 ),
                 'update_check_error': "Не удалось проверить обновления. Проверьте подключение к интернету и попробуйте ещё раз.",
+                'bug_report_button': "Сообщить об ошибке (Bug-report)",
+                'bug_report_open_error': "Не удалось открыть форму сообщения об ошибке.",
                 'profiles_transfer_title': "Профили",
                 'profiles_manage': "Управление профилями",
                 'profiles_manage_button': "Управление профилями",
@@ -1569,6 +1581,8 @@ class MainWindow(QMainWindow):
                     "you're testing a fresh build."
                 ),
                 'update_check_error': "Could not check for updates. Check your internet connection and try again.",
+                'bug_report_button': "Report a bug (Bug-report)",
+                'bug_report_open_error': "Could not open the bug report form.",
                 'profiles_transfer_title': "Profiles",
                 'profiles_manage': "Manage profiles",
                 'profiles_manage_button': "Manage profiles",
@@ -1731,6 +1745,7 @@ class MainWindow(QMainWindow):
         if not self.waiting_for_emergency_key:
             self.emergency_stop_key_edit.setText(self.emergency_stop_key)
         self.update_check_button.setText(self.tr('update_check_button'))
+        self.bug_report_button.setText(self.tr('bug_report_button'))
         self.profiles_transfer_title_label.setText(
             self.tr('profiles_transfer_title')
         )
@@ -2336,6 +2351,9 @@ class MainWindow(QMainWindow):
             lambda: self.check_for_updates(manual=True)
         )
         layout.addWidget(self.update_check_button)
+        self.bug_report_button = QPushButton(self.tr('bug_report_button'))
+        self.bug_report_button.clicked.connect(self.open_bug_report_form)
+        layout.addWidget(self.bug_report_button)
 
         add_separator()
 

@@ -1,5 +1,5 @@
 {
-  "latest_version": "2.2",
+  "latest_version": "2.4.1",
   "download_url": "https://github.com/lim0n4ikz/Lim0n4ikzGamesClicker/releases/latest/download/Lim0n4ikzGamesClickerSetup.exe",
   "releases": [
     {
@@ -66,6 +66,21 @@
           "Small profile interval values are displayed as regular decimal numbers instead of scientific notation.",
           "Profiles with equal minimum and maximum intervals are saved without random mode; users can enable it in the editor and set different bounds.",
           "When importing five or more profiles, users can choose which profiles to import; each entry shows its key, mode, and interval."
+        ]
+      }
+    },
+    {
+      "version": "2.4.1",
+      "changes": {
+        "ru": [
+          "Теперь вы можете сообщить об ошибке прямо из приложения, нажав кнопку «Сообщить об ошибке (Bug-report)» в настройках, которая открывает форму обратной связи.",
+          "В настройках добавлена кнопка «Сообщить об ошибке (Bug-report)», открывающая форму обратной связи.",
+          "Исправлен размер иконки приложения."
+        ],
+        "en": [
+          "Now you can report a bug directly from the application by clicking the “Report a bug (Bug-report)” button in Settings, which opens the feedback form.",
+          "Added a “Report a bug (Bug-report)” button in Settings that opens the feedback form.",
+          "Fixed the application icon size."
         ]
       }
     }
