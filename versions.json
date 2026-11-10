@@ -1,5 +1,5 @@
 {
-  "latest_version": "2.4.1",
+  "latest_version": "2.11.7",
   "download_url": "https://github.com/lim0n4ikz/Lim0n4ikzGamesClicker/releases/latest/download/Lim0n4ikzGamesClickerSetup.exe",
   "releases": [
     {
@@ -81,6 +81,43 @@
           "Now you can report a bug directly from the application by clicking the “Report a bug (Bug-report)” button in Settings, which opens the feedback form.",
           "Added a “Report a bug (Bug-report)” button in Settings that opens the feedback form.",
           "Fixed the application icon size."
+        ]
+      }
+    },
+    {
+      "version": "2.11.7",
+      "changes": {
+        "ru": [
+          "Добавлен режим кликов по координатам с записью последовательности точек на выбранном мониторе.",
+          "В режиме координат добавлена запись свайпов с удержанием выбранной кнопки мыши; клики и свайпы воспроизводятся в порядке записи и сохраняются в профилях.",
+          "Точки можно добавлять кликом на оверлее или захватом позиции курсора клавишей F8; последовательность координат сохраняется в профилях.",
+          "Добавлено необязательное плавное перемещение курсора с фиксированной или случайной длительностью; при плавном перемещении интервал между кликами не применяется, интервал между циклами настраивается отдельно.",
+          "Добавлено ограничение числа кликов с автоматической остановкой.",
+          "В строке состояния компактно отображаются число кликов и текущая скорость нажатий в секунду (КПС).",
+          "Рядом со счётчиком кликов и текущим КПС показывается средний КПС за запуск; после остановки он сохраняется до следующего запуска.",
+          "Новые установки приложения запускаются без начальных профилей; существующие пользовательские профили сохраняются.",
+          "Для пустого списка профилей добавлено наглядное сообщение с подсказкой.",
+          "При добавлении профиля можно скопировать текущие настройки или использовать стандартные.",
+          "В карточках профилей отображаются первые клавиши последовательности или комбинации.",
+          "Если в профиле не записаны клавиши, в карточке отображается пометка «Пусто».",
+          "В карточках мгновенных комбинаций отображаются только первые две клавиши.",
+          "Добавлены стандартные размеры кадров иконки приложения для корректного отображения в Windows."
+        ],
+        "en": [
+          "Added a coordinate-click mode that records a sequence of points on a selected monitor.",
+          "Coordinate mode can now record swipes while holding a selected mouse button; clicks and swipes are replayed in order and saved in profiles.",
+          "Points can be added by clicking the overlay or capturing the cursor position with F8; coordinate sequences are saved in profiles.",
+          "Added optional smooth cursor movement with fixed or randomized duration; click intervals are not applied during smooth movement, and the interval between complete cycles is configured separately.",
+          "Added an optional click limit that stops the clicker automatically.",
+          "The status bar compactly displays the click count and current click rate in clicks per second (CPS).",
+          "The click counter now shows average CPS for the run alongside current CPS; the average remains visible after stopping until the next run.",
+          "New installations start without initial profiles; existing user profiles are preserved.",
+          "Added a helpful empty-state message when there are no profiles.",
+          "When adding a profile, users can copy current settings or use defaults.",
+          "Profile cards show the first keys in a sequence or combination.",
+          "If a profile has no recorded keys, its card displays “Empty”.",
+          "Instant-combo profile cards now show only the first two keys.",
+          "Added standard application icon sizes for correct display in Windows."
         ]
       }
     }

@@ -1,7 +1,7 @@
 {
-    "settings_version": 3,
+    "settings_version": 7,
     "window": {
-        "width": 1200,
+        "width": 831,
         "height": 780
     },
     "mode_idx": 0,
@@ -10,11 +10,21 @@
     "hold_t": 1.0,
     "btw_t": 0.2,
     "seq_raw": "",
+    "coordinate_smooth": false,
+    "coordinate_move_duration": 0.3,
+    "coordinate_random_move_duration": false,
+    "coordinate_move_duration_max": 0.5,
+    "coordinate_cycle_interval": 0.5,
+    "coordinate_cycle_interval_max": 1.0,
+    "coordinate_random_cycle_interval": false,
+    "coordinate_random_click_interval": false,
     "random_i": true,
     "lang": "ru",
+    "theme": "dark",
     "start_hotkey": "F6",
     "stop_hotkey": "F7",
+    "emergency_stop_key": "ESC",
     "click_key": "SPACE",
     "click_key_type": "keyboard",
-    "hotkeys_enabled": true
+    "hotkeys_enabled": false
 }

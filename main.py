@@ -11,13 +11,16 @@ from urllib.parse import urlparse
 from pathlib import Path
 import threading
 import html
+from copy import deepcopy
+from collections import deque
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
 from PySide6.QtCore import Qt, QEvent, QTimer, QThread, Signal, Slot, QLocale, QUrl, QObject
 from PySide6.QtGui import (
-    QFont, QAction, QCursor, QIcon, QDoubleValidator, QDesktopServices, QColor,
-    QPainter, QPen,
+    QFont, QAction, QCursor, QIcon, QDoubleValidator, QIntValidator,
+    QDesktopServices, QColor,
+    QPainter, QPen, QGuiApplication,
 )
 from PySide6.QtGui import QValidator
 from PySide6.QtWidgets import (
@@ -25,10 +28,23 @@ from PySide6.QtWidgets import (
     QGridLayout, QLabel, QPushButton, QLineEdit, QComboBox,
     QTextEdit, QFrame, QCheckBox, QMessageBox, QRadioButton,
     QMenu, QDialog, QDialogButtonBox, QFormLayout, QSizePolicy, QScrollArea,
-    QTextBrowser, QFileDialog, QStyle, QStyleOptionButton,
+    QTextBrowser, QFileDialog, QStyle, QStyleOptionButton, QGroupBox,
 )
 
 from pynput import keyboard, mouse
+
+
+class CoordinateScreenUnavailable(ValueError):
+    pass
+
+
+def interpolate_cursor_position(start, end, progress):
+    progress = min(1.0, max(0.0, progress))
+    eased = progress * progress * (3 - 2 * progress)
+    return tuple(
+        round(source + (target - source) * eased)
+        for source, target in zip(start, end)
+    )
 
 
 class IntervalValidator(QDoubleValidator):
@@ -43,6 +59,396 @@ class IntervalValidator(QDoubleValidator):
         normalized = text.replace(",", ".")
         state, _, _ = super().validate(normalized, position)
         return state, text, position
+
+
+class CoordinateOverlay(QDialog):
+    def __init__(self, screen, points, translate, swipe_button, parent=None):
+        super().__init__(parent)
+        self.screen = screen
+        self.points = points
+        self.translate = translate
+        self.swipe_button = swipe_button
+        self.swipe_drawing = False
+        self.swipe_path = []
+        self.setWindowFlags(
+            Qt.FramelessWindowHint
+            | Qt.WindowStaysOnTopHint
+            | Qt.Tool
+        )
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setCursor(Qt.CrossCursor)
+        self.setMouseTracking(True)
+        self.setGeometry(screen.geometry())
+        self._application = QApplication.instance()
+        if self._application is not None:
+            self._application.installEventFilter(self)
+        self.finished.connect(self._remove_application_event_filter)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        QTimer.singleShot(0, self._activate_for_recording)
+
+    def _activate_for_recording(self):
+        if self.isVisible():
+            self.activateWindow()
+            self.setFocus(Qt.ActiveWindowFocusReason)
+
+    def _remove_application_event_filter(self, result):
+        if self._application is not None:
+            self._application.removeEventFilter(self)
+
+    def _handle_recording_key(self, event):
+        if event.key() == Qt.Key_Escape:
+            self.accept()
+            return True
+        if event.key() == Qt.Key_F8:
+            position = QCursor.pos()
+            geometry = self.screen.geometry()
+            if geometry.contains(position):
+                self._append_click_point(
+                    position.x() - geometry.x(),
+                    position.y() - geometry.y(),
+                )
+            return True
+        if event.key() == Qt.Key_Backspace:
+            if self.points:
+                self.points.pop()
+                self.update()
+            return True
+        return False
+
+    def eventFilter(self, watched, event):
+        if (
+            event.type() == QEvent.KeyPress
+            and self.isVisible()
+            and QApplication.activeModalWidget() is self
+            and self._handle_recording_key(event)
+        ):
+            event.accept()
+            return True
+        return super().eventFilter(watched, event)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.fillRect(self.rect(), QColor(5, 12, 24, 90))
+        painter.setPen(QColor("#ffffff"))
+        painter.setFont(QFont("Segoe UI", 14, QFont.Bold))
+        painter.drawText(
+            self.rect().adjusted(16, 16, -16, -self.height() + 72),
+            Qt.AlignCenter,
+            self.translate("coordinate_overlay_instructions"),
+        )
+        for index, action in enumerate(self.points, start=1):
+            if action.get("type") == "swipe":
+                path = action["points"]
+                painter.setPen(QPen(QColor("#ffd35c"), 4))
+                for start, end in zip(path, path[1:]):
+                    start_x, start_y = self._point_to_pixel(start)
+                    end_x, end_y = self._point_to_pixel(end)
+                    painter.drawLine(
+                        start_x,
+                        start_y,
+                        end_x,
+                        end_y,
+                    )
+                if path:
+                    self._draw_marker(
+                        painter,
+                        self._point_to_pixel(path[0]),
+                        index,
+                        QColor("#e99600"),
+                    )
+            else:
+                point = action.get("point", action)
+                self._draw_marker(
+                    painter,
+                    self._point_to_pixel(point),
+                    index,
+                    QColor("#7c5cfc"),
+                )
+        if self.swipe_drawing and len(self.swipe_path) > 1:
+            painter.setPen(QPen(QColor("#ffd35c"), 4))
+            for start, end in zip(self.swipe_path, self.swipe_path[1:]):
+                start_x, start_y = self._point_to_pixel(start)
+                end_x, end_y = self._point_to_pixel(end)
+                painter.drawLine(
+                    start_x,
+                    start_y,
+                    end_x,
+                    end_y,
+                )
+
+    def _point_to_pixel(self, point):
+        return (
+            round(point["x"] * max(0, self.width() - 1)),
+            round(point["y"] * max(0, self.height() - 1)),
+        )
+
+    @staticmethod
+    def _draw_marker(painter, position, index, color):
+        x, y = position
+        painter.setBrush(color)
+        painter.setPen(QPen(QColor("#ffffff"), 2))
+        painter.drawEllipse(x - 18, y - 18, 36, 36)
+        painter.setPen(QColor("#ffffff"))
+        painter.drawText(x - 18, y - 18, 36, 36, Qt.AlignCenter, str(index))
+
+    def _make_point(self, local_x, local_y):
+        geometry = self.screen.geometry()
+        if not geometry.width() or not geometry.height():
+            return None
+        return {
+            "screen": self.screen.name(),
+            "x": min(1.0, max(0.0, local_x / max(1, geometry.width() - 1))),
+            "y": min(1.0, max(0.0, local_y / max(1, geometry.height() - 1))),
+        }
+
+    def _append_click_point(self, local_x, local_y):
+        point = self._make_point(local_x, local_y)
+        if point is None:
+            return
+        self.points.append(point)
+        self.update()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            position = event.position()
+            if event.modifiers() & Qt.ShiftModifier:
+                self.swipe_drawing = True
+                self.swipe_path = []
+                point = self._make_point(position.x(), position.y())
+                if point is not None:
+                    self.swipe_path.append(point)
+                self.update()
+            else:
+                self._append_click_point(position.x(), position.y())
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self.swipe_drawing and event.buttons() & Qt.LeftButton:
+            position = event.position()
+            point = self._make_point(position.x(), position.y())
+            if point is not None:
+                previous = self.swipe_path[-1]
+                dx = point["x"] - previous["x"]
+                dy = point["y"] - previous["y"]
+                if dx * dx + dy * dy >= 0.000004:
+                    self.swipe_path.append(point)
+                    self.update()
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and self.swipe_drawing:
+            position = event.position()
+            final_point = self._make_point(position.x(), position.y())
+            if final_point is not None and (
+                not self.swipe_path
+                or final_point != self.swipe_path[-1]
+            ):
+                self.swipe_path.append(final_point)
+            if len(self.swipe_path) > 1:
+                self.points.append({
+                    "type": "swipe",
+                    "button": self.swipe_button,
+                    "points": self.swipe_path,
+                })
+            elif self.swipe_path:
+                self.points.append(self.swipe_path[0])
+            self.swipe_path = []
+            self.swipe_drawing = False
+            self.update()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event):
+        if not self._handle_recording_key(event):
+            super().keyPressEvent(event)
+
+
+class CoordinateRecorderDialog(QDialog):
+    def __init__(self, points, translate, parent=None):
+        super().__init__(parent)
+        self.translate = translate
+        self.points = deepcopy(points)
+        self.screens = QGuiApplication.screens()
+        self.setWindowTitle(translate("coordinate_recorder_title"))
+        self.setMinimumWidth(420)
+        layout = QVBoxLayout(self)
+
+        self.monitor_combo = QComboBox()
+        for index, screen in enumerate(self.screens, start=1):
+            geometry = screen.geometry()
+            self.monitor_combo.addItem(
+                f'{index}. {screen.name()} '
+                f'({geometry.width()}×{geometry.height()})',
+                screen,
+            )
+        last_action = self.points[-1] if self.points else {}
+        last_point = last_action
+        if (
+            isinstance(last_action, dict)
+            and last_action.get("type") == "swipe"
+        ):
+            path = last_action.get("points", [])
+            last_point = path[-1] if isinstance(path, list) and path else {}
+        last_screen_name = (
+            last_point.get("screen")
+            if isinstance(last_point, dict)
+            else None
+        )
+        selected_screen = next(
+            (
+                screen
+                for screen in self.screens
+                if screen.name() == last_screen_name
+            ),
+            QGuiApplication.primaryScreen(),
+        )
+        primary_index = self.monitor_combo.findData(selected_screen)
+        if primary_index >= 0:
+            self.monitor_combo.setCurrentIndex(primary_index)
+        layout.addWidget(QLabel(translate("coordinate_monitor")))
+        layout.addWidget(self.monitor_combo)
+
+        self.instructions_label = QLabel(
+            translate("coordinate_recorder_instructions")
+        )
+        self.instructions_label.setWordWrap(True)
+        layout.addWidget(self.instructions_label)
+
+        self.points_label = QLabel()
+        self.points_label.setWordWrap(True)
+        layout.addWidget(self.points_label)
+        self._refresh_points_label()
+
+        self.swipe_button_combo = QComboBox()
+        for button, label in (
+            ("left", "coordinate_swipe_left"),
+            ("right", "coordinate_swipe_right"),
+            ("middle", "coordinate_swipe_middle"),
+            ("x1", "coordinate_swipe_x1"),
+            ("x2", "coordinate_swipe_x2"),
+        ):
+            self.swipe_button_combo.addItem(translate(label), button)
+        layout.addWidget(QLabel(translate("coordinate_swipe_button")))
+        layout.addWidget(self.swipe_button_combo)
+
+        actions = QHBoxLayout()
+        self.record_button = QPushButton(
+            translate("coordinate_start_recording")
+        )
+        self.record_button.clicked.connect(self._record_points)
+        actions.addWidget(self.record_button)
+        self.clear_button = QPushButton(translate("button_clear"))
+        self.clear_button.clicked.connect(self._clear_points)
+        actions.addWidget(self.clear_button)
+        layout.addLayout(actions)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        buttons.button(QDialogButtonBox.Ok).setText(
+            translate("dialog_ok")
+        )
+        buttons.button(QDialogButtonBox.Cancel).setText(
+            translate("dialog_cancel")
+        )
+        layout.addWidget(buttons)
+        self._application = QApplication.instance()
+        if self._application is not None:
+            self._application.installEventFilter(self)
+        self.finished.connect(self._remove_application_event_filter)
+
+    def _record_points(self):
+        screen = self.monitor_combo.currentData()
+        if screen is None:
+            return
+        main_window = self.parentWidget().window()
+        was_visible = main_window.isVisible()
+        was_minimized = main_window.isMinimized()
+        was_maximized = main_window.isMaximized()
+        overlay = CoordinateOverlay(
+            screen,
+            self.points,
+            self.translate,
+            self.swipe_button_combo.currentData(),
+        )
+        if self.parent() is not None:
+            self.parent().coordinate_recording_active = True
+        try:
+            if was_visible and not was_minimized:
+                main_window.showMinimized()
+            overlay.exec()
+        finally:
+            if self.parent() is not None:
+                self.parent().coordinate_recording_active = False
+            if was_visible and not was_minimized:
+                if was_maximized:
+                    main_window.showMaximized()
+                else:
+                    main_window.showNormal()
+                main_window.activateWindow()
+        self._refresh_points_label()
+        self.activateWindow()
+        self.raise_()
+        self.setFocus(Qt.OtherFocusReason)
+
+    def eventFilter(self, watched, event):
+        is_editor_input = (
+            isinstance(watched, QWidget)
+            and (watched is self or self.isAncestorOf(watched))
+        )
+        if (
+            not is_editor_input
+            and self.isVisible()
+            and QApplication.activeModalWidget() is self
+        ):
+            is_editor_input = True
+        if (
+            event.type() == QEvent.KeyPress
+            and is_editor_input
+        ):
+            if event.key() == Qt.Key_Escape:
+                self.reject()
+                event.accept()
+                return True
+            if event.key() == Qt.Key_Backspace:
+                self._undo_last_action()
+                event.accept()
+                return True
+        return super().eventFilter(watched, event)
+
+    def _remove_application_event_filter(self, result):
+        if self._application is not None:
+            self._application.removeEventFilter(self)
+
+    def _undo_last_action(self):
+        if self.points:
+            self.points.pop()
+            self._refresh_points_label()
+
+    def _clear_points(self):
+        self.points.clear()
+        self._refresh_points_label()
+
+    def _refresh_points_label(self):
+        if not self.points:
+            self.points_label.setText(
+                self.translate("coordinate_points_empty")
+            )
+            return
+        self.points_label.setText(
+            self.translate("coordinate_points_count", len(self.points))
+        )
 
 
 def format_interval_value(value):
@@ -72,7 +478,7 @@ if sys.platform == "win32":
 # ============================================================
 
 APP_NAME = "Lim0n4ikzGames Clicker"
-APP_VERSION = "2.4.1"
+APP_VERSION = "2.11.7"
 BUG_REPORT_URL = "https://forms.gle/MZvS2rtF4Sae8eAV6"
 PROFILE_FILE_FORMAT = "lim0n4ikz-clicker-profiles"
 MAX_PROFILE_FILE_SIZE = 5 * 1024 * 1024
@@ -415,17 +821,25 @@ class ProfileEditDialog(QDialog):
         self.name_label = QLabel()
         self.icon_label = QLabel()
         self.mode_combo = QComboBox()
-        modes = [parent.tr('mode_instant'), parent.tr('mode_hold'), parent.tr('mode_combo'), parent.tr('mode_sequence')]
+        modes = [
+            parent.tr('mode_instant'),
+            parent.tr('mode_hold'),
+            parent.tr('mode_combo'),
+            parent.tr('mode_sequence'),
+            parent.tr('mode_coordinates'),
+        ]
         self.mode_combo.addItems(modes)
         mode_names = {
             parent.MODE_INSTANT: parent.tr('mode_instant'),
             parent.MODE_HOLD: parent.tr('mode_hold'),
             parent.MODE_COMBO: parent.tr('mode_combo'),
             parent.MODE_SEQUENCE: parent.tr('mode_sequence'),
+            parent.MODE_COORDINATES: parent.tr('mode_coordinates'),
             "Instant press": parent.tr('mode_instant'),
             "Hold key": parent.tr('mode_hold'),
             "Instant combo": parent.tr('mode_combo'),
             "Sequence press": parent.tr('mode_sequence'),
+            "Coordinate clicks": parent.tr('mode_coordinates'),
             "Обычный клик": parent.tr('mode_instant'),
         }
         current_mode = mode_names.get(
@@ -443,13 +857,34 @@ class ProfileEditDialog(QDialog):
         self.hold_edit = self._create_interval_edit(self.profile.get("hold", 1.0))
         self.between_edit = self._create_interval_edit(self.profile.get("between", 0.2))
         self.random_interval = QCheckBox(parent.tr('label_random_interval'))
+        is_coordinate_profile = self.mode_combo.currentIndex() == 4
         same_bounds = float(self.profile.get("min", 1.0)) == float(
             self.profile.get("max", 1.0)
         )
         self.random_interval.setChecked(
-            self.profile.get("random", True) and not same_bounds
+            (
+                self.profile.get(
+                    "coordinate_random_cycle_interval",
+                    False,
+                )
+                if is_coordinate_profile
+                else self.profile.get("random", True) and not same_bounds
+            )
         )
         self.random_interval.stateChanged.connect(self.update_interval_ui)
+        self.coordinate_random_click_interval_checkbox = QCheckBox(
+            parent.tr('label_coordinate_random_interval')
+        )
+        self.coordinate_random_click_interval_checkbox.setChecked(
+            self.profile.get(
+                "coordinate_random_click_interval",
+                self.profile.get("random", True),
+            )
+            and not same_bounds
+        )
+        self.coordinate_random_click_interval_checkbox.stateChanged.connect(
+            self.update_interval_ui
+        )
         self.min_edit.textChanged.connect(self.update_interval_ui)
         self.max_edit.textChanged.connect(self.update_interval_ui)
         self.sequence_edit = QTextEdit(self.profile.get("sequence", ""))
@@ -470,6 +905,128 @@ class ProfileEditDialog(QDialog):
         sequence_widget = QWidget()
         sequence_widget.setLayout(sequence_box)
         self.sequence_widget = sequence_widget
+        self.coordinate_points = deepcopy(
+            self.profile.get("coordinates", [])
+        )
+        self.coordinate_label = QLabel()
+        self.coordinate_points_label = QLabel()
+        self.coordinate_points_label.setWordWrap(True)
+        self.coordinate_record_button = QPushButton()
+        self.coordinate_record_button.clicked.connect(
+            self.open_coordinate_recorder
+        )
+        self.coordinate_clear_button = QPushButton(
+            parent.tr('button_clear')
+        )
+        self.coordinate_clear_button.clicked.connect(
+            self.clear_coordinate_points
+        )
+        coordinate_layout = QVBoxLayout()
+        coordinate_layout.addWidget(self.coordinate_points_label)
+        coordinate_buttons = QHBoxLayout()
+        coordinate_buttons.addWidget(self.coordinate_record_button)
+        coordinate_buttons.addWidget(self.coordinate_clear_button)
+        coordinate_layout.addLayout(coordinate_buttons)
+
+        self.coordinate_movement_group = QGroupBox()
+        movement_layout = QVBoxLayout(self.coordinate_movement_group)
+        self.coordinate_smooth_checkbox = QCheckBox(
+            parent.tr('coordinate_smooth_move')
+        )
+        self.coordinate_smooth_checkbox.setChecked(
+            self.profile.get("coordinate_smooth", False)
+        )
+        self.coordinate_smooth_checkbox.stateChanged.connect(
+            self.update_coordinate_move_ui
+        )
+        self.coordinate_random_move_duration_checkbox = QCheckBox(
+            parent.tr('coordinate_random_move_duration')
+        )
+        self.coordinate_random_move_duration_checkbox.setChecked(
+            self.profile.get("coordinate_random_move_duration", False)
+        )
+        self.coordinate_random_move_duration_checkbox.stateChanged.connect(
+            self.update_coordinate_move_ui
+        )
+        self.coordinate_move_duration_edit = self._create_interval_edit(
+            self.profile.get("coordinate_move_duration", 0.3)
+        )
+        self.coordinate_move_duration_label = QLabel()
+        self.coordinate_move_duration_min_edit = self._create_interval_edit(
+            self.profile.get("coordinate_move_duration", 0.3)
+        )
+        self.coordinate_move_duration_min_label = QLabel()
+        self.coordinate_move_duration_max_edit = self._create_interval_edit(
+            self.profile.get(
+                "coordinate_move_duration_max",
+                max(
+                    0.5,
+                    self.profile.get("coordinate_move_duration", 0.3),
+                ),
+            )
+        )
+        self.coordinate_move_duration_max_label = QLabel()
+        movement_layout.addWidget(self.coordinate_smooth_checkbox)
+        movement_layout.addWidget(
+            self.coordinate_random_move_duration_checkbox
+        )
+        coordinate_duration_row = QHBoxLayout()
+        coordinate_duration_row.addWidget(
+            self.coordinate_move_duration_label
+        )
+        coordinate_duration_row.addWidget(
+            self.coordinate_move_duration_edit
+        )
+        movement_layout.addLayout(coordinate_duration_row)
+        coordinate_random_duration_row = QHBoxLayout()
+        coordinate_random_duration_row.addWidget(
+            self.coordinate_move_duration_min_label
+        )
+        coordinate_random_duration_row.addWidget(
+            self.coordinate_move_duration_min_edit
+        )
+        coordinate_random_duration_row.addWidget(
+            self.coordinate_move_duration_max_label
+        )
+        coordinate_random_duration_row.addWidget(
+            self.coordinate_move_duration_max_edit
+        )
+        movement_layout.addLayout(coordinate_random_duration_row)
+        coordinate_layout.addWidget(self.coordinate_movement_group)
+
+        self.coordinate_cycle_interval_edit = self._create_interval_edit(
+            self.profile.get("coordinate_cycle_interval", 0.5)
+        )
+        self.coordinate_cycle_interval_label = QLabel()
+        self.coordinate_cycle_interval_max_edit = self._create_interval_edit(
+            self.profile.get(
+                "coordinate_cycle_interval_max",
+                max(
+                    1.0,
+                    self.profile.get("coordinate_cycle_interval", 0.5),
+                ),
+            )
+        )
+        self.coordinate_cycle_interval_max_label = QLabel()
+        coordinate_cycle_row = QHBoxLayout()
+        coordinate_cycle_row.addWidget(
+            self.coordinate_cycle_interval_label
+        )
+        coordinate_cycle_row.addWidget(
+            self.coordinate_cycle_interval_edit
+        )
+        coordinate_layout.addLayout(coordinate_cycle_row)
+        coordinate_cycle_max_row = QHBoxLayout()
+        coordinate_cycle_max_row.addWidget(
+            self.coordinate_cycle_interval_max_label
+        )
+        coordinate_cycle_max_row.addWidget(
+            self.coordinate_cycle_interval_max_edit
+        )
+        coordinate_layout.addLayout(coordinate_cycle_max_row)
+        coordinate_widget = QWidget()
+        coordinate_widget.setLayout(coordinate_layout)
+        self.coordinate_widget = coordinate_widget
 
         layout.addRow(self.name_label, self.name_edit)
         layout.addRow(self.icon_label, self.icon_edit)
@@ -480,6 +1037,7 @@ class ProfileEditDialog(QDialog):
         layout.addRow(self.mode_label, self.mode_combo)
         self.sequence_label = QLabel(parent.tr('label_sequence') + ":")
         layout.addRow(self.sequence_label, sequence_widget)
+        layout.addRow(self.coordinate_label, self.coordinate_widget)
         layout.addRow(self.random_interval)
         self.min_label = QLabel()
         self.max_label = QLabel()
@@ -487,9 +1045,12 @@ class ProfileEditDialog(QDialog):
         self.between_label = QLabel()
         layout.addRow(self.min_label, self.min_edit)
         layout.addRow(self.max_label, self.max_edit)
+        layout.addRow(self.coordinate_random_click_interval_checkbox)
         layout.addRow(self.hold_label, self.hold_edit)
         layout.addRow(self.between_label, self.between_edit)
+        self._last_mode_index = self.mode_combo.currentIndex()
         self.update_interval_ui()
+        self.update_coordinate_move_ui()
         self.update_mode_ui(self.mode_combo.currentIndex())
         self.mode_combo.currentIndexChanged.connect(self.update_mode_ui)
 
@@ -507,9 +1068,46 @@ class ProfileEditDialog(QDialog):
         self.key_label.setText(self.parent.tr('label_click_key') + ":")
         self.mode_label.setText(self.parent.tr('label_mode') + ":")
         self.sequence_label.setText(self.parent.tr('label_sequence') + ":")
+        self.coordinate_label.setText(
+            self.parent.tr('coordinate_points_label') + ":"
+        )
+        self.coordinate_record_button.setText(
+            self.parent.tr('coordinate_record_button')
+        )
+        self.coordinate_clear_button.setText(
+            self.parent.tr('button_clear')
+        )
+        self.coordinate_smooth_checkbox.setText(
+            self.parent.tr('coordinate_smooth_move')
+        )
+        self.coordinate_move_duration_label.setText(
+            self.parent.tr('coordinate_move_duration') + ":"
+        )
+        self.coordinate_random_move_duration_checkbox.setText(
+            self.parent.tr('coordinate_random_move_duration')
+        )
+        self.coordinate_move_duration_min_label.setText(
+            self.parent.tr('coordinate_move_duration_min') + ":"
+        )
+        self.coordinate_move_duration_max_label.setText(
+            self.parent.tr('coordinate_move_duration_max') + ":"
+        )
+        self.coordinate_cycle_interval_label.setText(
+            self.parent.tr('coordinate_cycle_interval') + ":"
+        )
+        self.coordinate_cycle_interval_max_label.setText(
+            self.parent.tr('coordinate_cycle_interval_max') + ":"
+        )
+        self.coordinate_movement_group.setTitle(
+            self.parent.tr('coordinate_movement_group')
+        )
+        self._refresh_coordinate_summary()
         self.hold_label.setText(self.parent.tr('label_hold') + ":")
         self.between_label.setText(self.parent.tr('label_interval_seq') + ":")
-        self.random_interval.setText(self.parent.tr('label_random_interval'))
+        self.coordinate_random_click_interval_checkbox.setText(
+            self.parent.tr('label_coordinate_random_interval')
+        )
+        self.update_interval_ui()
         self.record_btn.setText(
             self.parent.tr('button_stop_recording') if self.recording
             else self.parent.tr('button_record')
@@ -535,13 +1133,64 @@ class ProfileEditDialog(QDialog):
         except ValueError:
             return 0.0
 
+    def accept(self):
+        if (
+            self.coordinate_random_move_duration_checkbox.isChecked()
+            and self._interval_value(
+                self.coordinate_move_duration_min_edit
+            )
+            > self._interval_value(self.coordinate_move_duration_max_edit)
+        ):
+            QMessageBox.warning(
+                self,
+                self.parent.tr('error_title'),
+                self.parent.tr('coordinate_move_duration_order'),
+            )
+            return
+        if (
+            self.mode_combo.currentIndex() == 4
+            and self.random_interval.isChecked()
+            and self._interval_value(self.coordinate_cycle_interval_edit)
+            > self._interval_value(
+                self.coordinate_cycle_interval_max_edit
+            )
+        ):
+            QMessageBox.warning(
+                self,
+                self.parent.tr('error_title'),
+                self.parent.tr('coordinate_cycle_interval_order'),
+            )
+            return
+        if (
+            self.mode_combo.currentIndex() == 4
+            and not self.coordinate_smooth_checkbox.isChecked()
+            and self.coordinate_random_click_interval_checkbox.isChecked()
+            and self._interval_value(self.min_edit)
+            > self._interval_value(self.max_edit)
+        ):
+            QMessageBox.warning(
+                self,
+                self.parent.tr('error_title'),
+                self.parent.tr('coordinate_click_interval_order'),
+            )
+            return
+        super().accept()
+
     def get_profile(self):
         mode_names = [
             self.parent.tr('mode_instant'),
             self.parent.tr('mode_hold'),
             self.parent.tr('mode_combo'),
             self.parent.tr('mode_sequence'),
+            self.parent.tr('mode_coordinates'),
         ]
+        is_coordinate_mode = self.mode_combo.currentIndex() == 4
+        random_click_interval = (
+            self.coordinate_random_click_interval_checkbox.isChecked()
+            and not self.coordinate_smooth_checkbox.isChecked()
+            if is_coordinate_mode
+            else self.random_interval.isChecked()
+        )
         return {
             "icon": self.icon_edit.text(),
             "name": self.name_edit.text(),
@@ -552,37 +1201,235 @@ class ProfileEditDialog(QDialog):
             "between": self._interval_value(self.between_edit),
             "key": self.parent.profile_key_to_storage(self.key_edit.text()),
             "sequence": self.sequence_edit.toPlainText(),
-            "random": (
+            "coordinates": deepcopy(self.coordinate_points),
+            "coordinate_smooth": (
+                self.coordinate_smooth_checkbox.isChecked()
+            ),
+            "coordinate_move_duration": self._interval_value(
+                self.coordinate_move_duration_min_edit
+                if self.coordinate_random_move_duration_checkbox.isChecked()
+                else self.coordinate_move_duration_edit
+            ),
+            "coordinate_random_move_duration": (
+                self.coordinate_random_move_duration_checkbox.isChecked()
+            ),
+            "coordinate_move_duration_max": self._interval_value(
+                self.coordinate_move_duration_max_edit
+            ),
+            "coordinate_cycle_interval": self._interval_value(
+                self.coordinate_cycle_interval_edit
+            ),
+            "coordinate_cycle_interval_max": self._interval_value(
+                self.coordinate_cycle_interval_max_edit
+            ),
+            "coordinate_random_cycle_interval": (
                 self.random_interval.isChecked()
+            ),
+            "coordinate_random_click_interval": (
+                self.coordinate_random_click_interval_checkbox.isChecked()
+            ),
+            "random": (
+                random_click_interval
                 and not interval_fields_match(self.min_edit, self.max_edit)
             ),
         }
 
     def update_interval_ui(self):
         enabled = self.random_interval.isChecked()
-        self.min_label.setText(
-            self.parent.tr('label_min' if enabled else 'label_single_interval') + ":"
+        is_coordinate_mode = (
+            self.mode_combo.currentIndex() == 4
         )
-        self.max_label.setText(self.parent.tr('label_max') + ":")
-        self.max_label.setVisible(enabled)
-        self.max_edit.setVisible(enabled)
+        click_random_enabled = (
+            self.coordinate_random_click_interval_checkbox.isChecked()
+        )
+        show_click_interval = not (
+            is_coordinate_mode
+            and self.coordinate_smooth_checkbox.isChecked()
+        )
+        self.min_label.setText(
+            self.parent.tr(
+                'label_coordinate_min'
+                if is_coordinate_mode and click_random_enabled
+                else 'label_coordinate_single_interval'
+                if is_coordinate_mode
+                else 'label_min'
+                if enabled
+                else 'label_single_interval'
+            ) + ":"
+        )
+        self.max_label.setText(
+            self.parent.tr(
+                'label_coordinate_max'
+                if is_coordinate_mode
+                else 'label_max'
+            ) + ":"
+        )
+        self.min_label.setVisible(show_click_interval)
+        self.min_edit.setVisible(show_click_interval)
+        show_max_interval = (
+            show_click_interval and click_random_enabled
+            if is_coordinate_mode
+            else self.random_interval.isChecked()
+        )
+        self.max_label.setVisible(show_max_interval)
+        self.max_edit.setVisible(show_max_interval)
+        self.coordinate_random_click_interval_checkbox.setVisible(
+            is_coordinate_mode and show_click_interval
+        )
+        self.random_interval.setText(
+            self.parent.tr(
+                'label_coordinate_random_cycle_interval'
+                if is_coordinate_mode
+                else 'label_random_interval'
+            )
+        )
+        self.random_interval.setVisible(True)
+        if is_coordinate_mode:
+            self.coordinate_cycle_interval_label.setText(
+                self.parent.tr(
+                    'coordinate_cycle_interval_min'
+                    if self.random_interval.isChecked()
+                    else 'coordinate_cycle_interval'
+                ) + ":"
+            )
+        self.random_interval.setText(
+            self.parent.tr(
+                'label_coordinate_random_cycle_interval'
+                if is_coordinate_mode
+                else 'label_random_interval'
+            )
+        )
+        self.random_interval.setVisible(True)
+        self.coordinate_cycle_interval_max_label.setVisible(
+            is_coordinate_mode and self.random_interval.isChecked()
+        )
+        self.coordinate_cycle_interval_max_edit.setVisible(
+            is_coordinate_mode and self.random_interval.isChecked()
+        )
+
+    def update_coordinate_move_ui(self):
+        show_duration = (
+            self.mode_combo.currentIndex() == 4
+            and self.coordinate_smooth_checkbox.isChecked()
+        )
+        random_duration = (
+            show_duration
+            and self.coordinate_random_move_duration_checkbox.isChecked()
+        )
+        self.coordinate_move_duration_label.setVisible(
+            show_duration and not random_duration
+        )
+        self.coordinate_random_move_duration_checkbox.setVisible(
+            show_duration
+        )
+        self.coordinate_move_duration_edit.setVisible(
+            show_duration and not random_duration
+        )
+        self.coordinate_move_duration_min_label.setVisible(random_duration)
+        self.coordinate_move_duration_min_edit.setVisible(random_duration)
+        self.coordinate_move_duration_max_label.setVisible(random_duration)
+        self.coordinate_move_duration_max_edit.setVisible(random_duration)
+        self.coordinate_movement_group.setVisible(
+            self.mode_combo.currentIndex() == 4
+        )
+        is_coordinate_mode = self.mode_combo.currentIndex() == 4
+        self.coordinate_cycle_interval_label.setVisible(is_coordinate_mode)
+        self.coordinate_cycle_interval_edit.setVisible(is_coordinate_mode)
+        self.coordinate_cycle_interval_max_label.setVisible(
+            is_coordinate_mode and self.random_interval.isChecked()
+        )
+        self.coordinate_cycle_interval_max_edit.setVisible(
+            is_coordinate_mode and self.random_interval.isChecked()
+        )
+        self.update_interval_ui()
 
     def update_mode_ui(self, index):
+        if index != self._last_mode_index:
+            same_bounds = interval_fields_match(
+                self.min_edit,
+                self.max_edit,
+            )
+            if self._last_mode_index == 4:
+                self.profile["coordinate_random_cycle_interval"] = (
+                    self.random_interval.isChecked()
+                )
+                self.profile["coordinate_random_click_interval"] = (
+                    self.coordinate_random_click_interval_checkbox.isChecked()
+                )
+                self.profile["random"] = (
+                    self.coordinate_random_click_interval_checkbox.isChecked()
+                    and not same_bounds
+                )
+            else:
+                self.profile["random"] = (
+                    self.random_interval.isChecked()
+                    and not same_bounds
+                )
+
+            if index == 4:
+                self.random_interval.setChecked(
+                    self.profile.get(
+                        "coordinate_random_cycle_interval",
+                        False,
+                    )
+                )
+                self.coordinate_random_click_interval_checkbox.setChecked(
+                    self.profile.get(
+                        "coordinate_random_click_interval",
+                        self.profile.get("random", True),
+                    )
+                    and not same_bounds
+                )
+            else:
+                self.random_interval.setChecked(
+                    self.profile.get("random", True) and not same_bounds
+                )
+            self._last_mode_index = index
+
         is_sequence_mode = index in (2, 3)
-        self.key_edit.setVisible(not is_sequence_mode)
-        self.key_assign_btn.setVisible(not is_sequence_mode)
-        self.key_label.setVisible(not is_sequence_mode)
+        is_coordinate_mode = index == 4
+        needs_sequence_input = is_sequence_mode or is_coordinate_mode
+        self.key_edit.setVisible(not needs_sequence_input)
+        self.key_assign_btn.setVisible(not needs_sequence_input)
+        self.key_label.setVisible(not needs_sequence_input)
         self.sequence_label.setVisible(is_sequence_mode)
         self.sequence_widget.setVisible(is_sequence_mode)
         self.sequence_edit.setVisible(is_sequence_mode)
         self.record_btn.setVisible(is_sequence_mode)
         self.clear_btn.setVisible(is_sequence_mode)
+        self.coordinate_label.setVisible(is_coordinate_mode)
+        self.coordinate_widget.setVisible(is_coordinate_mode)
+        self.coordinate_smooth_checkbox.setVisible(is_coordinate_mode)
+        self.update_interval_ui()
+        self.update_coordinate_move_ui()
         is_hold_mode = index == 1
         self.hold_label.setVisible(is_hold_mode)
         self.hold_edit.setVisible(is_hold_mode)
         is_sequence_mode = index == 3
         self.between_label.setVisible(is_sequence_mode)
         self.between_edit.setVisible(is_sequence_mode)
+
+    def open_coordinate_recorder(self):
+        points = self.parent.record_coordinate_points(
+            self.coordinate_points
+        )
+        if points is not None:
+            self.coordinate_points = points
+            self._refresh_coordinate_summary()
+
+    def clear_coordinate_points(self):
+        self.coordinate_points.clear()
+        self._refresh_coordinate_summary()
+
+    def _refresh_coordinate_summary(self):
+        self.coordinate_points_label.setText(
+            self.parent.tr(
+                'coordinate_points_count',
+                len(self.coordinate_points),
+            )
+            if self.coordinate_points
+            else self.parent.tr('coordinate_points_empty')
+        )
 
     def bind_key(self):
         self.binding_recording = True
@@ -680,12 +1527,46 @@ class ProfileEditDialog(QDialog):
 # ============================================================
 class ClickerWorker(QThread):
     status_signal = Signal(str, str)
+    limit_reached = Signal()
 
     def __init__(self, parent_clicker):
         super().__init__()
         self.c = parent_clicker
         self.stop_event = threading.Event()
         self.last_status_time = 0.0
+        self.pending_clicks = 0
+        self.last_click_flush = time.monotonic() - 0.1
+        self.click_limit_enabled = self.c.click_limit_checkbox.isChecked()
+        self.click_limit = int(self.c.click_limit_edit.text() or "0")
+        self.run_click_count = 0
+
+    def record_click(self):
+        self.pending_clicks += 1
+        self.run_click_count += 1
+        now = time.monotonic()
+        if (
+            self.pending_clicks >= 32
+            or now - self.last_click_flush >= 0.1
+            or (
+                self.click_limit_enabled
+                and self.run_click_count >= self.click_limit
+            )
+        ):
+            self.flush_click_count()
+        if (
+            self.click_limit_enabled
+            and self.run_click_count >= self.click_limit
+        ):
+            self.stop_event.set()
+            self.limit_reached.emit()
+            return True
+        return False
+
+    def flush_click_count(self):
+        if self.pending_clicks:
+            self.c._record_click(self.pending_clicks)
+            self.pending_clicks = 0
+            self.last_click_flush = time.monotonic()
 
     def report_status(self, text, color):
         now = time.monotonic()
@@ -712,6 +1593,8 @@ class ClickerWorker(QThread):
 
                 if mode == self.c.MODE_HOLD:
                     self.c.press_only(self.c.click_key, self.c.click_key_type)
+                    if self.record_click():
+                        return
                     held = True
                     self.report_status(
                         self.c.tr('status_held', self.c.get_binding_name(self.c.click_key, self.c.click_key_type)),
@@ -725,10 +1608,14 @@ class ClickerWorker(QThread):
 
                 elif mode == self.c.MODE_SEQUENCE:
                     for item in list(self.c.sequence_keys):
+                        if self.stop_event.is_set():
+                            return
                         with self.c.click_lock:
                             if not self.c.clicking:
                                 return
                         self.c._press_and_release_item(item)
+                        if self.record_click():
+                            return
                         self.report_status(self.c.tr('status_pressed', self.c._item_to_string(item)), "red")
                         if not self.interruptible_sleep(self.c.sequence_interval):
                             return
@@ -737,12 +1624,125 @@ class ClickerWorker(QThread):
                     combo = list(self.c.sequence_keys)
                     if combo:
                         self.c._press_combo(combo)
+                        if self.record_click():
+                            return
                         self.report_status(
                             self.c.tr('status_combo', '+'.join(self.c._item_to_string(x) for x in combo)),
                             "red"
                         )
+                elif mode == self.c.MODE_COORDINATES:
+                    actions = self.c.coordinate_click_positions
+                    for index, action in enumerate(actions, start=1):
+                        if self.stop_event.is_set():
+                            return
+                        with self.c.click_lock:
+                            if not self.c.clicking:
+                                return
+                        if action["type"] == "swipe":
+                            try:
+                                if not self.perform_coordinate_swipe(action):
+                                    return
+                            except Exception as error:
+                                logging.getLogger(__name__).exception(
+                                    "Coordinate swipe failed"
+                                )
+                                self.status_signal.emit(
+                                    self.c.tr(
+                                        "status_coordinate_error",
+                                        error,
+                                    ),
+                                    "red",
+                                )
+                                return
+                            if self.record_click():
+                                return
+                            self.report_status(
+                                self.c.tr(
+                                    "status_coordinate_swipe",
+                                    index,
+                                    len(actions),
+                                ),
+                                "red",
+                            )
+                            if not self.c.coordinate_smooth_enabled:
+                                interval = (
+                                    random.uniform(
+                                        min_interval,
+                                        max_interval,
+                                    )
+                                    if self.c.coordinate_random_click_interval
+                                    else min_interval
+                                )
+                                if not self.interruptible_sleep(interval):
+                                    return
+                            continue
+
+                        x, y = action["position"]
+                        try:
+                            if self.c.coordinate_smooth_enabled:
+                                move_duration = (
+                                    random.uniform(
+                                        self.c.coordinate_move_duration,
+                                        self.c.coordinate_move_duration_max,
+                                    )
+                                    if self.c.coordinate_random_move_duration
+                                    else self.c.coordinate_move_duration
+                                )
+                                if not self.move_cursor_smoothly(
+                                    x,
+                                    y,
+                                    move_duration,
+                                ):
+                                    return
+                            self.c.click_at_position(x, y)
+                            if self.record_click():
+                                return
+                        except Exception as error:
+                            logging.getLogger(__name__).exception(
+                                "Coordinate click failed"
+                            )
+                            self.status_signal.emit(
+                                self.c.tr(
+                                    "status_coordinate_error",
+                                    error,
+                                ),
+                                "red",
+                            )
+                            return
+                        self.report_status(
+                            self.c.tr(
+                                'status_coordinate_click',
+                                index,
+                                len(actions),
+                            ),
+                            "red",
+                        )
+                        if not self.c.coordinate_smooth_enabled:
+                            interval = (
+                                random.uniform(
+                                    min_interval,
+                                    max_interval,
+                                )
+                                if self.c.coordinate_random_click_interval
+                                else min_interval
+                            )
+                            if not self.interruptible_sleep(interval):
+                                return
+                    cycle_interval = (
+                        random.uniform(
+                            self.c.coordinate_cycle_interval,
+                            self.c.coordinate_cycle_interval_max,
+                        )
+                        if self.c.coordinate_random_cycle_interval
+                        else self.c.coordinate_cycle_interval
+                    )
+                    if not self.interruptible_sleep(cycle_interval):
+                        return
+                    continue
                 else:  # Мгновенное нажатие
                     self.c.press_and_release(self.c.click_key, self.c.click_key_type)
+                    if self.record_click():
+                        return
                     self.report_status(pressed_status, "red")
 
                 if random_enabled:
@@ -754,9 +1754,110 @@ class ClickerWorker(QThread):
                 if not self.interruptible_sleep(interval):
                     break
         finally:
+            self.flush_click_count()
             if held:
                 self.c.release_only(self.c.click_key, self.c.click_key_type)
             self.c.release_all()
+
+    def perform_coordinate_swipe(self, action):
+        points = action["points"]
+        if not points or self.stop_event.is_set():
+            return False
+        button = action["button"]
+        if self.c.coordinate_smooth_enabled:
+            move_duration = (
+                random.uniform(
+                    self.c.coordinate_move_duration,
+                    self.c.coordinate_move_duration_max,
+                )
+                if self.c.coordinate_random_move_duration
+                else self.c.coordinate_move_duration
+            )
+            if not self.move_cursor_smoothly(
+                *points[0],
+                move_duration,
+            ):
+                return False
+        else:
+            self.c.mouse_controller.position = points[0]
+        pressed = False
+        with self.c._sim_lock:
+            self.c._simulating = True
+        try:
+            self.c.mouse_controller.press(button)
+            pressed = True
+            if self.stop_event.wait(0.01):
+                return False
+            if len(points) < 2:
+                return True
+
+            segment_lengths = [
+                math.dist(start, end)
+                for start, end in zip(points, points[1:])
+            ]
+            total_length = sum(segment_lengths)
+            duration = (
+                random.uniform(
+                    self.c.coordinate_move_duration,
+                    self.c.coordinate_move_duration_max,
+                )
+                if self.c.coordinate_random_move_duration
+                else self.c.coordinate_move_duration
+            )
+            if duration <= 0 or total_length <= 0:
+                for point in points[1:]:
+                    if self.stop_event.is_set():
+                        return False
+                    self.c.mouse_controller.position = point
+                return not self.stop_event.is_set()
+
+            started_at = time.perf_counter()
+            travelled = 0.0
+            segment_index = 0
+            while True:
+                if self.stop_event.is_set():
+                    return False
+                elapsed = time.perf_counter() - started_at
+                progress = min(1.0, elapsed / duration)
+                target_distance = total_length * progress
+                while (
+                    segment_index < len(segment_lengths) - 1
+                    and travelled + segment_lengths[segment_index]
+                    < target_distance
+                ):
+                    travelled += segment_lengths[segment_index]
+                    segment_index += 1
+                segment_length = segment_lengths[segment_index]
+                segment_progress = (
+                    1.0
+                    if segment_length <= 0
+                    else min(
+                        1.0,
+                        max(
+                            0.0,
+                            (target_distance - travelled) / segment_length,
+                        ),
+                    )
+                )
+                position = interpolate_cursor_position(
+                    points[segment_index],
+                    points[segment_index + 1],
+                    segment_progress,
+                )
+                self.c.mouse_controller.position = position
+                if progress >= 1.0:
+                    return True
+                if self.stop_event.wait(
+                    min(1 / 60, max(0.0, duration - elapsed))
+                ):
+                    return False
+        finally:
+            try:
+                if pressed:
+                    self.c.mouse_controller.release(button)
+            finally:
+                with self.c._sim_lock:
+                    self.c._simulating = False
 
     def interruptible_sleep(self, duration):
         with self.c.click_lock:
@@ -771,6 +1872,35 @@ class ClickerWorker(QThread):
                 time.sleep(0)
             return not self.stop_event.is_set()
         return not self.stop_event.wait(duration)
+
+    def move_cursor_smoothly(self, x, y, duration):
+        destination = (int(x), int(y))
+        if duration <= 0:
+            if self.stop_event.is_set():
+                return False
+            self.c.mouse_controller.position = destination
+            return True
+
+        start = self.c.mouse_controller.position
+        started_at = time.perf_counter()
+        with self.c._sim_lock:
+            self.c._simulating = True
+        try:
+            while True:
+                elapsed = time.perf_counter() - started_at
+                progress = min(1.0, elapsed / duration)
+                self.c.mouse_controller.position = interpolate_cursor_position(
+                    start,
+                    destination,
+                    progress,
+                )
+                if progress >= 1.0:
+                    return True
+                if self.stop_event.wait(min(1 / 60, duration - elapsed)):
+                    return False
+        finally:
+            with self.c._sim_lock:
+                self.c._simulating = False
 
     def stop(self):
         self.stop_event.set()
@@ -1128,7 +2258,67 @@ class ProfileWidget(QFrame):
         text.addWidget(interval)
         layout.addLayout(text, 1)
 
-        key = QLabel(self.parent.display_key_token(profile["key"]))
+        mode_value = profile.get("mode")
+        combo_modes = {
+            self.parent.MODE_COMBO,
+            self.parent.tr('mode_combo'),
+            "Instant combo",
+        }
+        sequence_modes = {
+            self.parent.MODE_SEQUENCE,
+            self.parent.tr('mode_sequence'),
+            "Sequence press",
+        }
+        coordinate_modes = {
+            self.parent.MODE_COORDINATES,
+            self.parent.tr('mode_coordinates'),
+            "Coordinate clicks",
+        }
+        sequence = profile.get("sequence", "").strip()
+        if mode_value in coordinate_modes:
+            points = profile.get("coordinates", [])
+            key_text = (
+                self.parent.tr(
+                    'coordinate_profile_summary',
+                    len(points),
+                )
+                if points
+                else self.parent.tr('coordinate_points_empty')
+            )
+            key_tooltip = ""
+        elif mode_value in combo_modes | sequence_modes:
+            is_combo = mode_value in combo_modes
+            if not sequence:
+                key_text = self.parent.tr('profile_keys_empty')
+                key_tooltip = ""
+            else:
+                if is_combo or "," in sequence:
+                    separator = "+" if is_combo else ","
+                    keys = [
+                        part.strip()
+                        for part in sequence.split(separator)
+                        if part.strip()
+                    ]
+                elif sequence.upper() in {
+                    "SPACE", "ПРОБЕЛ", "ENTER", "ESC", "TAB", "SHIFT",
+                    "CTRL", "CONTROL", "ALT", "LEFT", "RIGHT", "UP", "DOWN",
+                    "LMB", "RMB", "MMB", "X1", "X2",
+                }:
+                    keys = [sequence]
+                else:
+                    keys = list(sequence)
+                visible_key_count = 2 if is_combo else 3
+                key_text = ("+" if is_combo else ", ").join(
+                    keys[:visible_key_count]
+                )
+                if len(keys) > visible_key_count:
+                    key_text += " …"
+                key_tooltip = sequence
+        else:
+            key_text = self.parent.display_key_token(profile["key"])
+            key_tooltip = ""
+        key = QLabel(key_text)
+        key.setToolTip(key_tooltip)
         key.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
         key.setStyleSheet("QLabel { background: #07111d; border: 1px solid #2b435d; border-radius: 7px; padding: 7px 10px; color: #b9c9dc; font-size: 11px; }")
         layout.addWidget(key)
@@ -1165,6 +2355,7 @@ class MainWindow(QMainWindow):
     MODE_SEQUENCE = "Последовательное нажатие"
     MODE_INSTANT = "Мгновенное нажатие"
     MODE_COMBO = "Мгновенная комбинация"
+    MODE_COORDINATES = "Клики по координатам"
 
     # Сигналы для потокобезопасного обновления GUI
     hotkey_label_signal = Signal(str)
@@ -1191,6 +2382,12 @@ class MainWindow(QMainWindow):
 
         # Переменные логики автокликера
         self.clicking = False
+        self._click_count = 0
+        self._click_stats_lock = threading.Lock()
+        self._click_rate_samples = deque()
+        self._click_run_started_at = None
+        self._average_clicks_per_second = 0.0
+        self._status_text = ""
         self.profile_dialog = None
         self.hotkeys_enabled = True   # по умолчанию включены
         self.click_lock = threading.Lock()
@@ -1206,6 +2403,17 @@ class MainWindow(QMainWindow):
         self.sequence_input_active = False
         self.sequence_recording_keys = []
         self.sequence_recording_down = set()
+        self.coordinate_recording_active = False
+        self.coordinate_points = []
+        self.coordinate_click_positions = []
+        self.coordinate_smooth_enabled = False
+        self.coordinate_move_duration = 0.3
+        self.coordinate_move_duration_max = 0.5
+        self.coordinate_random_move_duration = False
+        self.coordinate_cycle_interval = 0.5
+        self.coordinate_cycle_interval_max = 1.0
+        self.coordinate_random_cycle_interval = False
+        self.coordinate_random_click_interval = False
         self.waiting_for_start_key = False
         self.waiting_for_stop_key = False
 
@@ -1269,6 +2477,10 @@ class MainWindow(QMainWindow):
         self.sequence_input_signal.connect(self._append_sequence_input)
         self.sequence_recording_signal.connect(self._set_sequence_recording)
         self.settings_save_signal.connect(self.save_settings)
+        self._click_stats_timer = QTimer(self)
+        self._click_stats_timer.setInterval(250)
+        self._click_stats_timer.timeout.connect(self._refresh_click_stats)
+        self._click_stats_timer.start()
 
         # Запускаем слушатели сразу
         self._ensure_listeners_started()
@@ -1410,6 +2622,7 @@ class MainWindow(QMainWindow):
                 'emergency_stop_assign': "Назначить клавишу",
                 'emergency_stop_capture': "Нажмите клавишу...",
                 'settings_updates_section': "Обновления",
+                'settings_bug_report_section': "Сообщить об ошибке",
                 'theme_dark': "Тёмная",
                 'theme_ocean': "Бирюзовая",
                 'theme_purple': "Фиолетовая",
@@ -1427,7 +2640,7 @@ class MainWindow(QMainWindow):
                     "релиз пока только {}. Кажется, вы тестируете свежую сборку."
                 ),
                 'update_check_error': "Не удалось проверить обновления. Проверьте подключение к интернету и попробуйте ещё раз.",
-                'bug_report_button': "Сообщить об ошибке (Bug-report)",
+                'bug_report_button': "Сообщить об ошибке",
                 'bug_report_open_error': "Не удалось открыть форму сообщения об ошибке.",
                 'profiles_transfer_title': "Профили",
                 'profiles_manage': "Управление профилями",
@@ -1439,6 +2652,12 @@ class MainWindow(QMainWindow):
                     "Удалить выбранные профили: {}?"
                 ),
                 'profiles_manage_no_profiles': "Профилей пока нет.",
+                'profile_keys_empty': "Пусто",
+                'profiles_empty_title': "Здесь пока пусто",
+                'profiles_empty_description': (
+                    "Создайте первый профиль кнопкой «Добавить» или "
+                    "импортируйте сохранённые профили."
+                ),
                 'profiles_manage_save_error': (
                     "Не удалось сохранить изменения профилей."
                 ),
@@ -1471,6 +2690,10 @@ class MainWindow(QMainWindow):
                 'profile_value_invalid': "Некорректное значение «{}» в профиле «{}»",
                 'profile_random_invalid': "Некорректный случайный интервал в профиле «{}»",
                 'profile_sequence_invalid': "Некорректная последовательность в профиле «{}»",
+                'profile_coordinates_invalid': "Некорректные координаты в профиле «{}»",
+                'profile_coordinate_smooth_invalid': (
+                    "Некорректный параметр плавного перемещения в профиле «{}»"
+                ),
                 'profile_file_too_large': "Размер файла профилей превышает 5 МБ",
                 'profile_file_format_invalid': "Неподдерживаемый формат файла профилей",
                 'profile_file_schema_invalid': "Неподдерживаемая версия файла профилей",
@@ -1479,6 +2702,9 @@ class MainWindow(QMainWindow):
                 'update_open_error': "Не удалось открыть страницу загрузки обновления.",
                 'status_stopped': "● Остановлен",
                 'status_running': "● Кликер работает",
+                'status_click_stats': (
+                    "Кликов: {} | КПС: {} | Средний КПС: {}"
+                ),
                 'status_error': "● Ошибка параметров",
                 'status_hotkeys_enabled': "● Горячие клавиши включены",
                 'status_hotkeys_disabled': "● Горячие клавиши отключены",
@@ -1486,12 +2712,70 @@ class MainWindow(QMainWindow):
                 'status_held': "● Зажата {}",
                 'status_pressed': "● Нажата {}",
                 'status_combo': "● Выполнена комбинация: {}",
+                'status_coordinate_click': "● Клик по точке {} из {}",
+                'status_coordinate_swipe': "● Свайп {} из {}",
+                'status_coordinate_error': "● Ошибка клика по координатам: {}",
                 'status_hold_released': "● Кликер работает (зажатие отпущено)",
                 'profiles_save_error': "● Не удалось сохранить профили",
                 'mode_instant': "Мгновенное нажатие",
                 'mode_hold': "Зажатие клавиши",
                 'mode_sequence': "Последовательное нажатие",
                 'mode_combo': "Мгновенная комбинация",
+                'mode_coordinates': "Клики по координатам",
+                'coordinate_monitor': "Монитор для записи",
+                'coordinate_recorder_title': "Запись координат",
+                'coordinate_recorder_instructions': (
+                    "На оверлее кликайте, чтобы добавить точку, или "
+                    "зажмите Shift и перетащите мышь, чтобы записать свайп. "
+                    "Выберите кнопку, которая будет удерживаться при свайпе. "
+                    "Backspace удаляет последнее действие и после записи."
+                ),
+                'coordinate_overlay_instructions': (
+                    "Клик — точка · Shift+перетаскивание — свайп · "
+                    "F8 — позиция курсора · Backspace — отменить · Esc — готово"
+                ),
+                'coordinate_start_recording': "Записать действия",
+                'coordinate_record_button': "Записать координаты",
+                'coordinate_swipe_button': "Кнопка мыши для свайпа",
+                'coordinate_swipe_left': "Левая кнопка",
+                'coordinate_swipe_right': "Правая кнопка",
+                'coordinate_swipe_middle': "Средняя кнопка",
+                'coordinate_swipe_x1': "Боковая кнопка X1",
+                'coordinate_swipe_x2': "Боковая кнопка X2",
+                'coordinate_points_label': "Действия",
+                'coordinate_points_empty': "Действия не записаны",
+                'coordinate_points_count': "Записано действий: {}",
+                'coordinate_profile_summary': "Действий: {}",
+                'coordinate_points_required': (
+                    "Сначала запишите хотя бы одно действие для режима "
+                    "«Клики по координатам»."
+                ),
+                'coordinate_points_invalid': "Некорректный список координат.",
+                'coordinate_movement_group': "Перемещение курсора",
+                'coordinate_smooth_move': "Плавно перемещать курсор между точками",
+                'coordinate_move_duration': "Длительность перемещения, сек.",
+                'coordinate_random_move_duration': "Случайная длительность перемещения",
+                'coordinate_move_duration_min': "От, сек.",
+                'coordinate_move_duration_max': "До, сек.",
+                'coordinate_move_duration_order': (
+                    "Максимальная длительность перемещения должна быть "
+                    "не меньше минимальной."
+                ),
+                'coordinate_cycle_interval': "Интервал между циклами, сек.",
+                'coordinate_cycle_interval_min': "Мин. интервал между циклами, сек.",
+                'coordinate_cycle_interval_max': "Макс. интервал между циклами, сек.",
+                'coordinate_cycle_interval_order': (
+                    "Максимальный интервал между циклами должен быть не "
+                    "меньше минимального."
+                ),
+                'coordinate_click_interval_order': (
+                    "Максимальный интервал между кликами должен быть не "
+                    "меньше минимального."
+                ),
+                'coordinate_screen_missing': (
+                    "Монитор «{}» недоступен. Запишите точки заново для "
+                    "подключённого монитора."
+                ),
                 'label_mode': "РЕЖИМ РАБОТЫ",
                 'label_settings': "ПАРАМЕТРЫ",
                 'label_click_key': "Клавиша / кнопка",
@@ -1505,7 +2789,14 @@ class MainWindow(QMainWindow):
                 'label_min': "Min задержка, сек.",
                 'label_max': "Max задержка, сек.",
                 'label_single_interval': "Интервал, сек.",
+                'label_coordinate_min': "Мин. интервал между кликами, сек.",
+                'label_coordinate_max': "Макс. интервал между кликами, сек.",
+                'label_coordinate_single_interval': "Интервал между кликами, сек.",
+                'label_coordinate_random_interval': "Случайный интервал между кликами",
+                'label_coordinate_random_cycle_interval': "Случайный интервал между циклами",
                 'label_random_interval': "Включить случайный интервал",
+                'click_limit_enabled': "Остановиться после",
+                'click_limit_suffix': "кликов",
                 'label_sec': "сек.",
                 'label_sequence': "Последовательность / комбинация",
                 'label_keys': "Последовательность / комбинация",
@@ -1535,6 +2826,13 @@ class MainWindow(QMainWindow):
                 'dialog_cancel': "Отмена",
                 'profiles_title': "БЫСТРЫЕ ПРОФИЛИ",
                 'add_profile': "＋  Добавить",
+                'profile_add_title': "Новый профиль",
+                'profile_add_question': (
+                    "Скопировать текущие настройки в новый профиль?"
+                ),
+                'profile_copy_settings': "Скопировать настройки",
+                'profile_default_settings': "Стандартные настройки",
+                'profile_new_name': "Новый профиль {}",
                 'edit_profile': "Редактировать профиль",
                 'delete_profile': "Удалить профиль",
                 'profile_edit_title': "Редактировать профиль",
@@ -1563,6 +2861,7 @@ class MainWindow(QMainWindow):
                 'emergency_stop_assign': "Assign key",
                 'emergency_stop_capture': "Press a key...",
                 'settings_updates_section': "Updates",
+                'settings_bug_report_section': "Bug report",
                 'theme_dark': "Dark",
                 'theme_ocean': "Turquoise",
                 'theme_purple': "Purple",
@@ -1581,7 +2880,7 @@ class MainWindow(QMainWindow):
                     "you're testing a fresh build."
                 ),
                 'update_check_error': "Could not check for updates. Check your internet connection and try again.",
-                'bug_report_button': "Report a bug (Bug-report)",
+                'bug_report_button': "Report a bug",
                 'bug_report_open_error': "Could not open the bug report form.",
                 'profiles_transfer_title': "Profiles",
                 'profiles_manage': "Manage profiles",
@@ -1593,6 +2892,12 @@ class MainWindow(QMainWindow):
                     "Delete selected profiles: {}?"
                 ),
                 'profiles_manage_no_profiles': "There are no profiles yet.",
+                'profile_keys_empty': "Empty",
+                'profiles_empty_title': "Nothing here yet",
+                'profiles_empty_description': (
+                    "Create your first profile with the Add button, or "
+                    "import saved profiles."
+                ),
                 'profiles_manage_save_error': (
                     "Could not save the profile changes."
                 ),
@@ -1625,6 +2930,10 @@ class MainWindow(QMainWindow):
                 'profile_value_invalid': "Invalid \"{}\" value in profile \"{}\"",
                 'profile_random_invalid': "Invalid random interval in profile \"{}\"",
                 'profile_sequence_invalid': "Invalid sequence in profile \"{}\"",
+                'profile_coordinates_invalid': "Invalid coordinates in profile \"{}\"",
+                'profile_coordinate_smooth_invalid': (
+                    "Invalid smooth-movement setting in profile \"{}\""
+                ),
                 'profile_file_too_large': "Profile file exceeds 5 MB",
                 'profile_file_format_invalid': "Unsupported profile file format",
                 'profile_file_schema_invalid': "Unsupported profile file version",
@@ -1633,6 +2942,9 @@ class MainWindow(QMainWindow):
                 'update_open_error': "Could not open the update download page.",
                 'status_stopped': "● Stopped",
                 'status_running': "● Clicker running",
+                'status_click_stats': (
+                    "Clicks: {} | CPS: {} | Avg. CPS: {}"
+                ),
                 'status_error': "● Parameter error",
                 'status_hotkeys_enabled': "● Hotkeys enabled",
                 'status_hotkeys_disabled': "● Hotkeys disabled",
@@ -1640,12 +2952,66 @@ class MainWindow(QMainWindow):
                 'status_held': "● Held {}",
                 'status_pressed': "● Pressed {}",
                 'status_combo': "● Executed combination: {}",
+                'status_coordinate_click': "● Clicked point {} of {}",
+                'status_coordinate_swipe': "● Swipe {} of {}",
+                'status_coordinate_error': "● Coordinate click failed: {}",
                 'status_hold_released': "● Clicker running (hold released)",
                 'profiles_save_error': "● Failed to save profiles",
                 'mode_instant': "Instant press",
                 'mode_hold': "Hold key",
                 'mode_sequence': "Sequence press",
                 'mode_combo': "Instant combo",
+                'mode_coordinates': "Coordinate clicks",
+                'coordinate_monitor': "Monitor for recording",
+                'coordinate_recorder_title': "Record coordinates",
+                'coordinate_recorder_instructions': (
+                    "Click the overlay to add a point, or hold Shift and "
+                    "drag to record a swipe. Select which mouse button is "
+                    "held during swipe playback. Backspace removes the last "
+                    "action, including after recording."
+                ),
+                'coordinate_overlay_instructions': (
+                    "Click: point · Shift+drag: swipe · "
+                    "F8: cursor position · Backspace: undo · Esc: finish"
+                ),
+                'coordinate_start_recording': "Record actions",
+                'coordinate_record_button': "Record coordinates",
+                'coordinate_swipe_button': "Mouse button for swipe",
+                'coordinate_swipe_left': "Left button",
+                'coordinate_swipe_right': "Right button",
+                'coordinate_swipe_middle': "Middle button",
+                'coordinate_swipe_x1': "Side button X1",
+                'coordinate_swipe_x2': "Side button X2",
+                'coordinate_points_label': "Actions",
+                'coordinate_points_empty': "No actions recorded",
+                'coordinate_points_count': "Recorded actions: {}",
+                'coordinate_profile_summary': "Actions: {}",
+                'coordinate_points_required': (
+                    "Record at least one action for Coordinate clicks mode."
+                ),
+                'coordinate_points_invalid': "The coordinate point list is invalid.",
+                'coordinate_movement_group': "Cursor movement",
+                'coordinate_smooth_move': "Move the cursor smoothly between points",
+                'coordinate_move_duration': "Movement duration, sec.",
+                'coordinate_random_move_duration': "Randomize movement duration",
+                'coordinate_move_duration_min': "Min, sec.",
+                'coordinate_move_duration_max': "Max, sec.",
+                'coordinate_move_duration_order': (
+                    "Maximum movement duration must not be less than the minimum."
+                ),
+                'coordinate_cycle_interval': "Interval between cycles, sec.",
+                'coordinate_cycle_interval_min': "Min interval between cycles, sec.",
+                'coordinate_cycle_interval_max': "Max interval between cycles, sec.",
+                'coordinate_cycle_interval_order': (
+                    "Maximum interval between cycles must not be less than the minimum."
+                ),
+                'coordinate_click_interval_order': (
+                    "Maximum interval between clicks must not be less than the minimum."
+                ),
+                'coordinate_screen_missing': (
+                    "Monitor \"{}\" is unavailable. Record the points again "
+                    "for a connected monitor."
+                ),
                 'label_mode': "WORK MODE",
                 'label_settings': "PARAMETERS",
                 'label_click_key': "Key / Button",
@@ -1659,7 +3025,14 @@ class MainWindow(QMainWindow):
                 'label_min': "Min delay, sec.",
                 'label_max': "Max delay, sec.",
                 'label_single_interval': "Interval, sec.",
+                'label_coordinate_min': "Min interval between clicks, sec.",
+                'label_coordinate_max': "Max interval between clicks, sec.",
+                'label_coordinate_single_interval': "Interval between clicks, sec.",
+                'label_coordinate_random_interval': "Randomize interval between clicks",
+                'label_coordinate_random_cycle_interval': "Randomize interval between cycles",
                 'label_random_interval': "Enable random interval",
+                'click_limit_enabled': "Stop after",
+                'click_limit_suffix': "clicks",
                 'label_sec': "sec.",
                 'label_sequence': "Sequence / Combo",
                 'label_keys': "Sequence / Combination",
@@ -1689,6 +3062,13 @@ class MainWindow(QMainWindow):
                 'dialog_cancel': "Cancel",
                 'profiles_title': "QUICK PROFILES",
                 'add_profile': "＋  Add",
+                'profile_add_title': "New profile",
+                'profile_add_question': (
+                    "Copy the current settings to the new profile?"
+                ),
+                'profile_copy_settings': "Copy current settings",
+                'profile_default_settings': "Use default settings",
+                'profile_new_name': "New profile {}",
                 'edit_profile': "Edit Profile",
                 'delete_profile': "Delete Profile",
                 'profile_edit_title': "Edit Profile",
@@ -1711,6 +3091,7 @@ class MainWindow(QMainWindow):
             self.MODE_HOLD: 'mode_hold',
             self.MODE_SEQUENCE: 'mode_sequence',
             self.MODE_COMBO: 'mode_combo',
+            self.MODE_COORDINATES: 'mode_coordinates',
         }
         return self.tr(mapping.get(mode_key, mode_key))
 
@@ -1730,6 +3111,9 @@ class MainWindow(QMainWindow):
         self.settings_theme_label.setText(self.tr('settings_theme'))
         self.settings_updates_title_label.setText(
             self.tr('settings_updates_section')
+        )
+        self.settings_bug_report_title_label.setText(
+            self.tr('settings_bug_report_section')
         )
         self.emergency_stop_title_label.setText(
             self.tr('emergency_stop_title')
@@ -1772,6 +3156,41 @@ class MainWindow(QMainWindow):
         self._set_sequence_recording(self.waiting_for_sequence_input)
         self.sequence_clear_btn.setText(self.tr('button_clear'))
         self.sequence_apply_btn.setText(self.tr('button_apply'))
+        self.coordinate_record_button.setText(
+            self.tr('coordinate_record_button')
+        )
+        self.coordinate_smooth_checkbox.setText(
+            self.tr('coordinate_smooth_move')
+        )
+        self.coordinate_random_move_duration_checkbox.setText(
+            self.tr('coordinate_random_move_duration')
+        )
+        self.coordinate_move_duration_label.setText(
+            self.tr('coordinate_move_duration')
+        )
+        self.coordinate_move_duration_min_label.setText(
+            self.tr('coordinate_move_duration_min')
+        )
+        self.coordinate_move_duration_max_label.setText(
+            self.tr('coordinate_move_duration_max')
+        )
+        self.coordinate_movement_group.setTitle(
+            self.tr('coordinate_movement_group')
+        )
+        self.coordinate_cycle_interval_label.setText(
+            self.tr('coordinate_cycle_interval')
+        )
+        self.coordinate_cycle_interval_max_label.setText(
+            self.tr('coordinate_cycle_interval_max')
+        )
+        self.coordinate_random_click_interval_checkbox.setText(
+            self.tr('label_coordinate_random_interval')
+        )
+        self.coordinate_points_label.setText(
+            self.tr('coordinate_points_count', len(self.coordinate_points))
+            if self.coordinate_points
+            else self.tr('coordinate_points_empty')
+        )
         self.start_btn.setText(self.tr('button_start'))
         self.stop_btn.setText(
             self.tr('button_stop').format(self.emergency_stop_key)
@@ -1784,6 +3203,12 @@ class MainWindow(QMainWindow):
         self.enable_hk_btn.setText(self.tr('button_hotkeys_enable'))
         self.disable_hk_btn.setText(self.tr('button_hotkeys_disable'))
         self.random_interval.setText(self.tr('label_random_interval'))
+        self.click_limit_checkbox.setText(
+            self.tr('click_limit_enabled')
+        )
+        self.click_limit_suffix.setText(
+            self.tr('click_limit_suffix')
+        )
         self.update_random_interval_ui()
         self.profiles_title_label.setText(self.tr('profiles_title'))
         self.add_profile_btn.setText(self.tr('add_profile'))
@@ -1796,6 +3221,12 @@ class MainWindow(QMainWindow):
         self.profiles_search_empty_label.setText(
             self.tr('profiles_search_empty')
         )
+        self.profiles_empty_title_label.setText(
+            self.tr('profiles_empty_title')
+        )
+        self.profiles_empty_description_label.setText(
+            self.tr('profiles_empty_description')
+        )
         self.lang_label.setText(self.tr('language'))
         # Обновление выпадающего списка режимов
         self.mode.blockSignals(True)
@@ -1804,13 +3235,15 @@ class MainWindow(QMainWindow):
             self.tr('mode_instant'),
             self.tr('mode_hold'),
             self.tr('mode_combo'),
-            self.tr('mode_sequence')
+            self.tr('mode_sequence'),
+            self.tr('mode_coordinates'),
         ])
         mode_map = {
             self.MODE_INSTANT: 0,
             self.MODE_HOLD: 1,
             self.MODE_COMBO: 2,
-            self.MODE_SEQUENCE: 3
+            self.MODE_SEQUENCE: 3,
+            self.MODE_COORDINATES: 4,
         }
         self.mode.setCurrentIndex(mode_map.get(self.current_mode, 0))
         self.mode.blockSignals(False)
@@ -1849,12 +3282,118 @@ class MainWindow(QMainWindow):
 
     def update_random_interval_ui(self):
         random_enabled = self.random_interval.isChecked()
-        self.lbl_min_interval.setText(
-            self.tr('label_min') if random_enabled
-            else self.tr('label_single_interval')
+        is_coordinate_mode = self.current_mode == self.MODE_COORDINATES
+        random_click_enabled = (
+            self.coordinate_random_click_interval_checkbox.isChecked()
         )
-        self.lbl_max_interval.setVisible(random_enabled)
-        self.max_interval_edit.setVisible(random_enabled)
+        self.lbl_min_interval.setText(
+            self.tr(
+                'label_coordinate_min'
+                if is_coordinate_mode and random_click_enabled
+                else 'label_coordinate_single_interval'
+                if is_coordinate_mode
+                else 'label_min'
+                if random_enabled
+                else 'label_single_interval'
+            )
+        )
+        self.lbl_max_interval.setText(
+            self.tr(
+                'label_coordinate_max'
+                if is_coordinate_mode
+                else 'label_max'
+            )
+        )
+        self.random_interval.setText(
+            self.tr(
+                'label_coordinate_random_cycle_interval'
+                if is_coordinate_mode
+                else 'label_random_interval'
+            )
+        )
+        if is_coordinate_mode:
+            self.coordinate_cycle_interval_label.setText(
+                self.tr(
+                    'coordinate_cycle_interval_min'
+                    if random_enabled
+                    else 'coordinate_cycle_interval'
+                )
+            )
+        self.coordinate_random_click_interval_checkbox.setText(
+            self.tr('label_coordinate_random_interval')
+        )
+        self.coordinate_cycle_interval_max_label.setVisible(
+            is_coordinate_mode and random_enabled
+        )
+        self.coordinate_cycle_interval_max_edit.setVisible(
+            is_coordinate_mode and random_enabled
+        )
+        self.update_random_interval_visibility()
+
+    def _on_click_limit_toggled(self, enabled):
+        self.click_limit_edit.setEnabled(enabled)
+        self.save_settings()
+
+    def update_coordinate_move_ui(self):
+        show_duration = (
+            self.current_mode == self.MODE_COORDINATES
+            and self.coordinate_smooth_checkbox.isChecked()
+        )
+        random_duration = (
+            show_duration
+            and self.coordinate_random_move_duration_checkbox.isChecked()
+        )
+        self.coordinate_move_duration_label.setVisible(
+            show_duration and not random_duration
+        )
+        self.coordinate_random_move_duration_checkbox.setVisible(
+            show_duration
+        )
+        self.coordinate_move_duration_edit.setVisible(
+            show_duration and not random_duration
+        )
+        self.coordinate_move_duration_min_label.setVisible(random_duration)
+        self.coordinate_move_duration_min_edit.setVisible(random_duration)
+        self.coordinate_move_duration_max_label.setVisible(random_duration)
+        self.coordinate_move_duration_max_edit.setVisible(random_duration)
+        self.coordinate_movement_group.setVisible(
+            self.current_mode == self.MODE_COORDINATES
+        )
+        show_cycle_interval = self.current_mode == self.MODE_COORDINATES
+        self.coordinate_cycle_interval_label.setVisible(show_cycle_interval)
+        self.coordinate_cycle_interval_edit.setVisible(show_cycle_interval)
+        random_cycle = self.random_interval.isChecked()
+        self.coordinate_cycle_interval_max_label.setVisible(
+            show_cycle_interval and random_cycle
+        )
+        self.coordinate_cycle_interval_max_edit.setVisible(
+            show_cycle_interval and random_cycle
+        )
+        self.update_random_interval_visibility()
+
+    def update_random_interval_visibility(self):
+        is_coordinate_mode = self.current_mode == self.MODE_COORDINATES
+        self.random_interval.setVisible(True)
+        random_click_enabled = (
+            self.coordinate_random_click_interval_checkbox.isChecked()
+            if is_coordinate_mode
+            else self.random_interval.isChecked()
+        )
+        show_click_interval = not (
+            is_coordinate_mode
+            and self.coordinate_smooth_checkbox.isChecked()
+        )
+        self.lbl_min_interval.setVisible(show_click_interval)
+        self.min_interval_edit.setVisible(show_click_interval)
+        self.lbl_max_interval.setVisible(
+            show_click_interval and random_click_enabled
+        )
+        self.max_interval_edit.setVisible(
+            show_click_interval and random_click_enabled
+        )
+        self.coordinate_random_click_interval_checkbox.setVisible(
+            is_coordinate_mode and show_click_interval
+        )
 
     def update_hotkey_ui(self):
         # обновление внешнего вида кнопок включения/выключения хоткеев
@@ -1912,6 +3451,8 @@ class MainWindow(QMainWindow):
             app = QApplication.instance()
             if app:
                 app.setStyleSheet(theme_stylesheet(self.theme, font_size))
+        if hasattr(self, "status_label"):
+            self._render_status_text()
 
     # ==========================================================
     # ИНТЕРФЕЙС UI
@@ -1948,7 +3489,21 @@ class MainWindow(QMainWindow):
         header.addLayout(title_box)
         header.addStretch()
 
+        self.click_stats_label = QLabel()
+        self.click_stats_label.setMinimumWidth(0)
+        self.click_stats_label.setMaximumWidth(280)
+        self.click_stats_label.setSizePolicy(
+            QSizePolicy.Maximum,
+            QSizePolicy.Fixed,
+        )
+        header.addWidget(self.click_stats_label)
         self.status_label = QLabel(self.tr('status_stopped'))
+        self.status_label.setMinimumWidth(125)
+        self.status_label.setMaximumWidth(190)
+        self.status_label.setSizePolicy(
+            QSizePolicy.Preferred,
+            QSizePolicy.Fixed,
+        )
         self._status_base_color = "#ff6873"
         self.status_label.setStyleSheet("color:#ff6873; font-weight:600;")
         header.addWidget(self.status_label)
@@ -2103,6 +3658,7 @@ class MainWindow(QMainWindow):
             "Sequence press",
             "Instant combo",
             "Обычный клик",
+            "Coordinate clicks",
         }
         for language in ("ru", "en"):
             supported_modes.update(
@@ -2112,6 +3668,7 @@ class MainWindow(QMainWindow):
                     "mode_hold",
                     "mode_sequence",
                     "mode_combo",
+                    "mode_coordinates",
                 )
             )
         if not isinstance(mode, str) or mode not in supported_modes:
@@ -2140,10 +3697,186 @@ class MainWindow(QMainWindow):
         between = numeric_value("between", 0.2)
         random_interval = profile.get("random", True)
         sequence = profile.get("sequence", "")
+        coordinates = profile.get("coordinates", [])
+        coordinate_smooth = profile.get("coordinate_smooth", False)
+        coordinate_move_duration = numeric_value(
+            "coordinate_move_duration",
+            0.3,
+        )
+        coordinate_random_move_duration = profile.get(
+            "coordinate_random_move_duration",
+            False,
+        )
+        coordinate_move_duration_max = numeric_value(
+            "coordinate_move_duration_max",
+            max(0.5, coordinate_move_duration),
+        )
+        coordinate_cycle_interval = numeric_value(
+            "coordinate_cycle_interval",
+            0.5,
+        )
+        coordinate_cycle_interval_max = numeric_value(
+            "coordinate_cycle_interval_max",
+            max(1.0, coordinate_cycle_interval),
+        )
+        coordinate_random_cycle_interval = profile.get(
+            "coordinate_random_cycle_interval",
+            False,
+        )
+        coordinate_random_click_interval = profile.get(
+            "coordinate_random_click_interval",
+            random_interval,
+        )
+        if coordinate_move_duration > 999999999:
+            raise ValueError(
+                self.tr(
+                    'profile_value_invalid',
+                    "coordinate_move_duration",
+                    name,
+                )
+            )
+        if coordinate_cycle_interval > 999999999:
+            raise ValueError(
+                self.tr(
+                    'profile_value_invalid',
+                    "coordinate_cycle_interval",
+                    name,
+                )
+            )
+        if coordinate_cycle_interval_max > 999999999:
+            raise ValueError(
+                self.tr(
+                    'profile_value_invalid',
+                    "coordinate_cycle_interval_max",
+                    name,
+                )
+            )
+        if coordinate_move_duration_max > 999999999:
+            raise ValueError(
+                self.tr(
+                    'profile_value_invalid',
+                    "coordinate_move_duration_max",
+                    name,
+                )
+            )
         if not isinstance(random_interval, bool):
             raise ValueError(self.tr('profile_random_invalid', name))
+        if not isinstance(coordinate_smooth, bool):
+            raise ValueError(
+                self.tr('profile_coordinate_smooth_invalid', name)
+            )
+        if not isinstance(coordinate_random_move_duration, bool):
+            raise ValueError(
+                self.tr('profile_coordinate_smooth_invalid', name)
+            )
+        if (
+            not isinstance(coordinate_random_cycle_interval, bool)
+            or not isinstance(coordinate_random_click_interval, bool)
+        ):
+            raise ValueError(
+                self.tr('profile_random_invalid', name)
+            )
+        if (
+            coordinate_random_move_duration
+            and coordinate_move_duration > coordinate_move_duration_max
+        ):
+            raise ValueError(
+                self.tr(
+                    'profile_value_invalid',
+                    "coordinate_move_duration_max",
+                    name,
+                )
+            )
+        if (
+            coordinate_random_cycle_interval
+            and coordinate_cycle_interval > coordinate_cycle_interval_max
+        ):
+            raise ValueError(
+                self.tr(
+                    'profile_value_invalid',
+                    "coordinate_cycle_interval_max",
+                    name,
+                )
+            )
+        if (
+            coordinate_random_click_interval
+            and minimum > maximum
+        ):
+            raise ValueError(
+                self.tr(
+                    'profile_value_invalid',
+                    "max",
+                    name,
+                )
+            )
         if not isinstance(sequence, str):
             raise ValueError(self.tr('profile_sequence_invalid', name))
+        if not isinstance(coordinates, list):
+            raise ValueError(self.tr('profile_coordinates_invalid', name))
+        normalized_coordinates = []
+        swipe_buttons = {"left", "right", "middle", "x1", "x2"}
+
+        def normalize_coordinate_point(point):
+            if not isinstance(point, dict):
+                raise ValueError(self.tr('profile_coordinates_invalid', name))
+            screen = point.get("screen")
+            x = point.get("x")
+            y = point.get("y")
+            if isinstance(x, bool) or isinstance(y, bool):
+                raise ValueError(self.tr('profile_coordinates_invalid', name))
+            try:
+                x = float(x)
+                y = float(y)
+            except (TypeError, ValueError, OverflowError) as error:
+                raise ValueError(
+                    self.tr('profile_coordinates_invalid', name)
+                ) from error
+            if (
+                not isinstance(screen, str)
+                or not screen.strip()
+                or not math.isfinite(x)
+                or not math.isfinite(y)
+                or not 0 <= x <= 1
+                or not 0 <= y <= 1
+            ):
+                raise ValueError(self.tr('profile_coordinates_invalid', name))
+            return {
+                "screen": screen.strip(),
+                "x": float(x),
+                "y": float(y),
+            }
+
+        for action in coordinates:
+            if not isinstance(action, dict):
+                raise ValueError(self.tr('profile_coordinates_invalid', name))
+            action_type = action.get("type")
+            if action_type == "swipe":
+                button = action.get("button")
+                path = action.get("points")
+                if (
+                    not isinstance(button, str)
+                    or button not in swipe_buttons
+                    or not isinstance(path, list)
+                    or len(path) < 2
+                ):
+                    raise ValueError(
+                        self.tr('profile_coordinates_invalid', name)
+                    )
+                normalized_coordinates.append({
+                    "type": "swipe",
+                    "button": button,
+                    "points": [
+                        normalize_coordinate_point(point)
+                        for point in path
+                    ],
+                })
+            elif action_type in (None, "click"):
+                point = action.get("point", action)
+                normalized_coordinates.append(
+                    normalize_coordinate_point(point)
+                )
+            else:
+                raise ValueError(self.tr('profile_coordinates_invalid', name))
 
         return {
             "icon": icon,
@@ -2155,7 +3888,25 @@ class MainWindow(QMainWindow):
             "between": between,
             "key": key.strip(),
             "sequence": sequence,
-            "random": random_interval and minimum != maximum,
+            "coordinates": normalized_coordinates,
+            "coordinate_smooth": coordinate_smooth,
+            "coordinate_move_duration": coordinate_move_duration,
+            "coordinate_random_move_duration": (
+                coordinate_random_move_duration
+            ),
+            "coordinate_move_duration_max": coordinate_move_duration_max,
+            "coordinate_cycle_interval": coordinate_cycle_interval,
+            "coordinate_cycle_interval_max": coordinate_cycle_interval_max,
+            "coordinate_random_cycle_interval": (
+                coordinate_random_cycle_interval
+            ),
+            "coordinate_random_click_interval": (
+                coordinate_random_click_interval
+            ),
+            "random": (
+                coordinate_random_click_interval
+                and minimum != maximum
+            ),
         }
 
     def _format_import_profile_details(self, profile):
@@ -2164,6 +3915,7 @@ class MainWindow(QMainWindow):
             self.MODE_HOLD: 'mode_hold',
             self.MODE_SEQUENCE: 'mode_sequence',
             self.MODE_COMBO: 'mode_combo',
+            self.MODE_COORDINATES: 'mode_coordinates',
         }
         mode_key = mode_keys.get(profile["mode"])
         if mode_key is None:
@@ -2351,6 +4103,13 @@ class MainWindow(QMainWindow):
             lambda: self.check_for_updates(manual=True)
         )
         layout.addWidget(self.update_check_button)
+
+        add_separator()
+        self.settings_bug_report_title_label = QLabel(
+            self.tr('settings_bug_report_section')
+        )
+        self.settings_bug_report_title_label.setObjectName("section")
+        layout.addWidget(self.settings_bug_report_title_label)
         self.bug_report_button = QPushButton(self.tr('bug_report_button'))
         self.bug_report_button.clicked.connect(self.open_bug_report_form)
         layout.addWidget(self.bug_report_button)
@@ -2503,7 +4262,13 @@ class MainWindow(QMainWindow):
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
         self.interval_grid = grid
+        self.coordinate_random_click_interval_checkbox = CheckmarkCheckBox()
+        self.coordinate_random_click_interval_checkbox.stateChanged.connect(
+            self.update_random_interval_ui
+        )
+        self.coordinate_random_click_interval_checkbox.setVisible(False)
         layout.addLayout(grid)
+        layout.addWidget(self.coordinate_random_click_interval_checkbox)
 
         self.sequence_label = QLabel()
         layout.addWidget(self.sequence_label)
@@ -2538,6 +4303,102 @@ class MainWindow(QMainWindow):
         sequence_buttons.addWidget(self.sequence_apply_btn, 1)
         layout.addLayout(sequence_buttons)
 
+        self.coordinate_points_label = QLabel(
+            self.tr('coordinate_points_empty')
+        )
+        self.coordinate_record_button = QPushButton(
+            self.tr('coordinate_record_button')
+        )
+        self.coordinate_record_button.setObjectName("blue")
+        self.coordinate_record_button.clicked.connect(
+            self.record_current_coordinates
+        )
+        self.coordinate_clear_button = QPushButton(
+            self.tr('button_clear')
+        )
+        self.coordinate_clear_button.clicked.connect(
+            self.clear_coordinate_points
+        )
+        layout.addWidget(self.coordinate_points_label)
+        coordinate_buttons = QHBoxLayout()
+        coordinate_buttons.addWidget(self.coordinate_record_button)
+        coordinate_buttons.addWidget(self.coordinate_clear_button)
+        layout.addLayout(coordinate_buttons)
+
+        self.coordinate_movement_group = QGroupBox()
+        coordinate_movement_layout = QVBoxLayout(
+            self.coordinate_movement_group
+        )
+        self.coordinate_smooth_checkbox = CheckmarkCheckBox()
+        self.coordinate_smooth_checkbox.stateChanged.connect(
+            self.update_coordinate_move_ui
+        )
+        coordinate_movement_layout.addWidget(
+            self.coordinate_smooth_checkbox
+        )
+        self.coordinate_random_move_duration_checkbox = CheckmarkCheckBox()
+        self.coordinate_random_move_duration_checkbox.stateChanged.connect(
+            self.update_coordinate_move_ui
+        )
+        coordinate_movement_layout.addWidget(
+            self.coordinate_random_move_duration_checkbox
+        )
+        coordinate_duration_row = QHBoxLayout()
+        self.coordinate_move_duration_label = QLabel()
+        self.coordinate_move_duration_edit = self._create_interval_edit(0.3)
+        self.coordinate_move_duration_min_label = QLabel()
+        self.coordinate_move_duration_min_edit = self._create_interval_edit(
+            0.3
+        )
+        self.coordinate_move_duration_max_label = QLabel()
+        self.coordinate_move_duration_max_edit = self._create_interval_edit(0.5)
+        self.coordinate_cycle_interval_label = QLabel()
+        self.coordinate_cycle_interval_edit = self._create_interval_edit(0.5)
+        coordinate_duration_row.addWidget(
+            self.coordinate_move_duration_label
+        )
+        coordinate_duration_row.addWidget(
+            self.coordinate_move_duration_edit
+        )
+        coordinate_movement_layout.addLayout(coordinate_duration_row)
+        coordinate_random_duration_row = QHBoxLayout()
+        coordinate_random_duration_row.addWidget(
+            self.coordinate_move_duration_min_label
+        )
+        coordinate_random_duration_row.addWidget(
+            self.coordinate_move_duration_min_edit
+        )
+        coordinate_random_duration_row.addWidget(
+            self.coordinate_move_duration_max_label
+        )
+        coordinate_random_duration_row.addWidget(
+            self.coordinate_move_duration_max_edit
+        )
+        coordinate_movement_layout.addLayout(
+            coordinate_random_duration_row
+        )
+        layout.addWidget(self.coordinate_movement_group)
+        coordinate_cycle_row = QHBoxLayout()
+        coordinate_cycle_row.addWidget(
+            self.coordinate_cycle_interval_label
+        )
+        coordinate_cycle_row.addWidget(
+            self.coordinate_cycle_interval_edit
+        )
+        layout.addLayout(coordinate_cycle_row)
+        coordinate_cycle_max_row = QHBoxLayout()
+        self.coordinate_cycle_interval_max_label = QLabel()
+        self.coordinate_cycle_interval_max_edit = self._create_interval_edit(
+            1.0
+        )
+        coordinate_cycle_max_row.addWidget(
+            self.coordinate_cycle_interval_max_label
+        )
+        coordinate_cycle_max_row.addWidget(
+            self.coordinate_cycle_interval_max_edit
+        )
+        layout.addLayout(coordinate_cycle_max_row)
+
         self.random_interval = CheckmarkCheckBox(
             self.tr('label_random_interval')
         )
@@ -2550,6 +4411,30 @@ class MainWindow(QMainWindow):
             self.update_random_interval_ui
         )
         layout.addWidget(self.random_interval)
+
+        click_limit_row = QHBoxLayout()
+        self.click_limit_checkbox = CheckmarkCheckBox()
+        self.click_limit_checkbox.toggled.connect(
+            self._on_click_limit_toggled
+        )
+        self.click_limit_checkbox.setText(
+            self.tr('click_limit_enabled')
+        )
+        self.click_limit_edit = QLineEdit("100")
+        self.click_limit_edit.setValidator(
+            QIntValidator(1, 999999999, self.click_limit_edit)
+        )
+        self.click_limit_edit.setMaximumWidth(110)
+        self.click_limit_edit.setEnabled(False)
+        self.click_limit_edit.editingFinished.connect(self.save_settings)
+        self.click_limit_suffix = QLabel(
+            self.tr('click_limit_suffix')
+        )
+        click_limit_row.addWidget(self.click_limit_checkbox)
+        click_limit_row.addWidget(self.click_limit_edit)
+        click_limit_row.addWidget(self.click_limit_suffix)
+        click_limit_row.addStretch()
+        layout.addLayout(click_limit_row)
 
         # ---- Бинды горячих клавиш ----
         self.section_hk = QLabel()
@@ -2682,6 +4567,32 @@ class MainWindow(QMainWindow):
         self.profiles_search_empty_label.hide()
         layout.addWidget(self.profiles_search_empty_label)
 
+        self.profiles_empty_widget = QWidget()
+        empty_layout = QVBoxLayout(self.profiles_empty_widget)
+        empty_layout.addStretch()
+        empty_icon = QLabel("🗂️")
+        empty_icon.setAlignment(Qt.AlignCenter)
+        empty_icon.setFont(QFont("Segoe UI Emoji", 30))
+        empty_layout.addWidget(empty_icon)
+        self.profiles_empty_title_label = QLabel(
+            self.tr('profiles_empty_title')
+        )
+        self.profiles_empty_title_label.setObjectName("section")
+        self.profiles_empty_title_label.setAlignment(Qt.AlignCenter)
+        empty_layout.addWidget(self.profiles_empty_title_label)
+        self.profiles_empty_description_label = QLabel(
+            self.tr('profiles_empty_description')
+        )
+        self.profiles_empty_description_label.setAlignment(Qt.AlignCenter)
+        self.profiles_empty_description_label.setWordWrap(True)
+        self.profiles_empty_description_label.setStyleSheet(
+            "color: #91a4ba; padding: 0 16px;"
+        )
+        empty_layout.addWidget(self.profiles_empty_description_label)
+        empty_layout.addStretch()
+        self.profiles_empty_widget.hide()
+        layout.addWidget(self.profiles_empty_widget, 1)
+
         self.profile_scroll = QScrollArea()
         self.profile_scroll.setWidgetResizable(True)
         self.profile_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -2785,6 +4696,8 @@ class MainWindow(QMainWindow):
     # ОБРАБОТЧИКИ НАЖАТИЙ И СЛУШАТЕЛИ PYNPUT (исправлены)
     # ==========================================================
     def on_key_press(self, key):
+        if self.coordinate_recording_active:
+            return
         key_token = self._normalize_key_to_str(key)
         with self.hotkey_lock:
             if self.waiting_for_emergency_key:
@@ -2807,6 +4720,7 @@ class MainWindow(QMainWindow):
                 self.binding_capture_keys.clear()
             if self.sequence_input_active or self.waiting_for_sequence_input:
                 self._stop_sequence_recording()
+            self._signal_worker_stop()
             self.stop_request_signal.emit()
             return
         if captured_emergency_key:
@@ -2870,6 +4784,7 @@ class MainWindow(QMainWindow):
             if self._hotkey_matches(self.stop_hotkey):
                 if "stop" not in self.hotkey_fired:
                     self.hotkey_fired.add("stop")
+                    self._signal_worker_stop()
                     self.stop_clicker_safe()
             elif not simulating and self._hotkey_matches(self.start_hotkey):
                 if "start" not in self.hotkey_fired:
@@ -2877,6 +4792,8 @@ class MainWindow(QMainWindow):
                     self.start_clicker_safe()
 
     def on_key_release(self, key):
+        if self.coordinate_recording_active:
+            return
         with self.hotkey_lock:
             if self.waiting_for_sequence_input:
                 self.sequence_recording_down.discard(
@@ -2898,6 +4815,8 @@ class MainWindow(QMainWindow):
                 self.hotkey_fired.clear()
 
     def on_mouse_click(self, x, y, button, pressed):
+        if self.coordinate_recording_active:
+            return
         with self._sim_lock:
             simulating = self._simulating
         if simulating:
@@ -2908,6 +4827,7 @@ class MainWindow(QMainWindow):
                     if self.hotkeys_enabled and self._hotkey_matches(self.stop_hotkey):
                         if "stop" not in self.hotkey_fired:
                             self.hotkey_fired.add("stop")
+                            self._signal_worker_stop()
                             self.stop_clicker_safe()
                 else:
                     self.pressed_keys.discard(token)
@@ -3182,6 +5102,16 @@ class MainWindow(QMainWindow):
             with self._sim_lock:
                 self._simulating = False
 
+    def click_at_position(self, x, y):
+        with self._sim_lock:
+            self._simulating = True
+        try:
+            self.mouse_controller.position = (int(x), int(y))
+            self.mouse_controller.click(mouse.Button.left)
+        finally:
+            with self._sim_lock:
+                self._simulating = False
+
     def release_all(self):
         with self._sim_lock:
             self._simulating = True
@@ -3211,13 +5141,25 @@ class MainWindow(QMainWindow):
             if self.clicking:
                 return
             try:
+                is_coordinate_mode = (
+                    self.current_mode == self.MODE_COORDINATES
+                )
+                random_click_interval = (
+                    self.coordinate_random_click_interval_checkbox.isChecked()
+                    if is_coordinate_mode
+                    else self.random_interval.isChecked()
+                )
                 self.min_interval = self._interval_value(self.min_interval_edit)
-                if self.random_interval.isChecked():
+                if random_click_interval:
                     self.max_interval = self._interval_value(self.max_interval_edit)
                 else:
                     self.max_interval = self.min_interval
                 if self.min_interval > self.max_interval:
                     raise ValueError
+                if self.click_limit_checkbox.isChecked():
+                    click_limit = int(self.click_limit_edit.text())
+                    if not 1 <= click_limit <= 999999999:
+                        raise ValueError
                 if self.current_mode == self.MODE_HOLD:
                     self.hold_duration = self._interval_value(self.hold_time_edit)
                 elif self.current_mode in (self.MODE_SEQUENCE, self.MODE_COMBO):
@@ -3227,13 +5169,96 @@ class MainWindow(QMainWindow):
                         return
                     self.sequence_keys = parsed
                     self.sequence_interval = self._interval_value(self.between_edit)
+                elif self.current_mode == self.MODE_COORDINATES:
+                    if not self.coordinate_points:
+                        QMessageBox.warning(
+                            self,
+                            self.tr('error_title'),
+                            self.tr('coordinate_points_required'),
+                        )
+                        return
+                    self.coordinate_click_positions = (
+                        self.resolve_coordinate_points(self.coordinate_points)
+                    )
+                    self.coordinate_smooth_enabled = (
+                        self.coordinate_smooth_checkbox.isChecked()
+                    )
+                    self.coordinate_move_duration = self._interval_value(
+                        self.coordinate_move_duration_min_edit
+                        if self.coordinate_random_move_duration_checkbox.isChecked()
+                        else self.coordinate_move_duration_edit
+                    )
+                    self.coordinate_move_duration_max = (
+                        self._interval_value(
+                            self.coordinate_move_duration_max_edit
+                        )
+                    )
+                    self.coordinate_random_move_duration = (
+                        self.coordinate_random_move_duration_checkbox.isChecked()
+                    )
+                    self.coordinate_cycle_interval = self._interval_value(
+                        self.coordinate_cycle_interval_edit
+                    )
+                    self.coordinate_cycle_interval_max = (
+                        self._interval_value(
+                            self.coordinate_cycle_interval_max_edit
+                        )
+                    )
+                    self.coordinate_random_cycle_interval = (
+                        self.random_interval.isChecked()
+                    )
+                    self.coordinate_random_click_interval = (
+                        self.coordinate_random_click_interval_checkbox.isChecked()
+                        and not self.coordinate_smooth_enabled
+                    )
+                    if not math.isfinite(self.coordinate_move_duration):
+                        raise ValueError
+                    if not math.isfinite(
+                        self.coordinate_move_duration_max
+                    ):
+                        raise ValueError
+                    if not math.isfinite(self.coordinate_cycle_interval):
+                        raise ValueError
+                    if not math.isfinite(
+                        self.coordinate_cycle_interval_max
+                    ):
+                        raise ValueError
+                    if (
+                        self.coordinate_random_move_duration
+                        and self.coordinate_move_duration
+                        > self.coordinate_move_duration_max
+                    ):
+                        raise ValueError
+                    if (
+                        self.coordinate_random_cycle_interval
+                        and self.coordinate_cycle_interval
+                        > self.coordinate_cycle_interval_max
+                    ):
+                        raise ValueError
+            except CoordinateScreenUnavailable as error:
+                QMessageBox.warning(
+                    self,
+                    self.tr('error_title'),
+                    str(error),
+                )
+                return
             except ValueError:
                 self.status_signal.emit(self.tr('status_error'), "red")
                 return
+            with self._click_stats_lock:
+                self._click_count = 0
+                self._click_run_started_at = time.monotonic()
+                self._average_clicks_per_second = 0.0
+            self._click_rate_samples.clear()
+            self._click_rate_samples.append(
+                (self._click_run_started_at, 0)
+            )
+            self._refresh_click_stats()
             self.clicking = True
             self.status_signal.emit(self.tr('status_running'), "#35d07f")
             self.worker = ClickerWorker(self)
-            self.worker.status_signal.connect(self.status_signal.emit)
+            self.worker.status_signal.connect(self._set_worker_status)
+            self.worker.limit_reached.connect(self.stop_clicker)
             self.worker.start()
 
     def stop_clicker(self):
@@ -3250,6 +5275,17 @@ class MainWindow(QMainWindow):
         if worker:
             worker.wait()
             worker.deleteLater()
+        with self._click_stats_lock:
+            if self._click_run_started_at is not None:
+                elapsed = max(
+                    0.001,
+                    time.monotonic() - self._click_run_started_at,
+                )
+                self._average_clicks_per_second = (
+                    self._click_count / elapsed
+                )
+                self._click_run_started_at = None
+        self._refresh_click_stats()
         self.status_signal.emit(self.tr('status_stopped'), "#ff6873")
 
     def bind_click_key(self):
@@ -3275,6 +5311,104 @@ class MainWindow(QMainWindow):
                 self.sequence_recording_down.clear()
                 self.sequence_edit.clear()
         self.sequence_recording_signal.emit(self.waiting_for_sequence_input)
+
+    def record_coordinate_points(self, points):
+        dialog = CoordinateRecorderDialog(points, self.tr, self)
+        self.apply_theme()
+        if dialog.exec() == QDialog.Accepted:
+            return deepcopy(dialog.points)
+        return None
+
+    def resolve_coordinate_points(self, points):
+        screens_by_name = {
+            screen.name(): screen for screen in QGuiApplication.screens()
+        }
+
+        def resolve_point(point):
+            if not isinstance(point, dict):
+                raise ValueError(self.tr('coordinate_points_invalid'))
+            screen_name = point.get("screen")
+            if not isinstance(screen_name, str) or not screen_name:
+                raise ValueError(self.tr('coordinate_points_invalid'))
+            screen = screens_by_name.get(screen_name)
+            if screen is None:
+                raise CoordinateScreenUnavailable(
+                    self.tr('coordinate_screen_missing', screen_name or "")
+                )
+            x = point.get("x")
+            y = point.get("y")
+            if isinstance(x, bool) or isinstance(y, bool):
+                raise ValueError(self.tr('coordinate_points_invalid'))
+            try:
+                x = float(x)
+                y = float(y)
+            except (TypeError, ValueError, OverflowError) as error:
+                raise ValueError(
+                    self.tr('coordinate_points_invalid')
+                ) from error
+            if (
+                not math.isfinite(x)
+                or not math.isfinite(y)
+                or not 0 <= x <= 1
+                or not 0 <= y <= 1
+            ):
+                raise ValueError(self.tr('coordinate_points_invalid'))
+            geometry = screen.geometry()
+            if geometry.width() <= 0 or geometry.height() <= 0:
+                raise ValueError(self.tr('coordinate_points_invalid'))
+            return (
+                geometry.x() + round(x * (geometry.width() - 1)),
+                geometry.y() + round(y * (geometry.height() - 1)),
+            )
+
+        button_map = {
+            "left": mouse.Button.left,
+            "right": mouse.Button.right,
+            "middle": mouse.Button.middle,
+            "x1": mouse.Button.x1,
+            "x2": mouse.Button.x2,
+        }
+        resolved = []
+        for action in points:
+            if not isinstance(action, dict):
+                raise ValueError(self.tr('coordinate_points_invalid'))
+            if action.get("type") == "swipe":
+                button = button_map.get(action.get("button"))
+                path = action.get("points")
+                if button is None or not isinstance(path, list) or len(path) < 2:
+                    raise ValueError(self.tr('coordinate_points_invalid'))
+                resolved.append({
+                    "type": "swipe",
+                    "button": button,
+                    "points": [resolve_point(point) for point in path],
+                })
+            else:
+                point = action.get("point", action)
+                resolved.append({
+                    "type": "click",
+                    "position": resolve_point(point),
+                })
+        return resolved
+
+    def record_current_coordinates(self):
+        points = self.record_coordinate_points(self.coordinate_points)
+        if points is not None:
+            self.coordinate_points = points
+            self._refresh_coordinate_points_label()
+
+    def clear_coordinate_points(self):
+        self.coordinate_points.clear()
+        self._refresh_coordinate_points_label()
+
+    def _refresh_coordinate_points_label(self):
+        self.coordinate_points_label.setText(
+            self.tr(
+                'coordinate_points_count',
+                len(self.coordinate_points),
+            )
+            if self.coordinate_points
+            else self.tr('coordinate_points_empty')
+        )
 
     def _on_record_button_pressed(self):
         self.sequence_record_button_pressed = self.sequence_input_active
@@ -3485,7 +5619,13 @@ class MainWindow(QMainWindow):
     # ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ И МЕНЕДЖМЕНТ ОКОН UI
     # ==========================================================
     def on_mode_changed(self, index):
-        modes = [self.MODE_INSTANT, self.MODE_HOLD, self.MODE_COMBO, self.MODE_SEQUENCE]
+        modes = [
+            self.MODE_INSTANT,
+            self.MODE_HOLD,
+            self.MODE_COMBO,
+            self.MODE_SEQUENCE,
+            self.MODE_COORDINATES,
+        ]
         if self.waiting_for_sequence_input:
             self._stop_sequence_recording()
         self.current_mode = modes[index]
@@ -3493,6 +5633,7 @@ class MainWindow(QMainWindow):
 
     def update_mode_ui(self):
         is_seq_or_combo = self.current_mode in (self.MODE_SEQUENCE, self.MODE_COMBO)
+        is_coordinate_mode = self.current_mode == self.MODE_COORDINATES
         if self.current_mode == self.MODE_HOLD:
             self.interval_grid.addWidget(self.lbl_hold_time, 2, 0)
             self.interval_grid.addWidget(self.hold_time_edit, 3, 0)
@@ -3516,6 +5657,13 @@ class MainWindow(QMainWindow):
         self.sequence_assign_btn.setVisible(is_seq_or_combo)
         self.sequence_clear_btn.setVisible(is_seq_or_combo)
         self.sequence_apply_btn.setVisible(False)
+        self.coordinate_points_label.setVisible(is_coordinate_mode)
+        self.coordinate_record_button.setVisible(is_coordinate_mode)
+        self.coordinate_clear_button.setVisible(is_coordinate_mode)
+        self.coordinate_smooth_checkbox.setVisible(is_coordinate_mode)
+        self.coordinate_movement_group.setVisible(is_coordinate_mode)
+        self.update_random_interval_ui()
+        self.update_coordinate_move_ui()
         if self.current_mode == self.MODE_COMBO:
             self.sequence_edit.setPlaceholderText(self.tr('placeholder_combo'))
         else:
@@ -3573,7 +5721,8 @@ class MainWindow(QMainWindow):
 
     @Slot(str, str)
     def _set_status(self, text, color):
-        self.status_label.setText(text)
+        self._status_text = text
+        self._render_status_text()
         self._status_base_color = color
         status_color = THEME_COLOR_MAPS[self.theme].get(
             color.lower(),
@@ -3581,6 +5730,78 @@ class MainWindow(QMainWindow):
         )
         self.status_label.setStyleSheet(
             f"color: {status_color}; font-weight: 700;"
+        )
+
+    @Slot(str, str)
+    def _set_worker_status(self, text, color):
+        if not self.clicking or self.sender() is not self.worker:
+            return
+        self._set_status(text, color)
+
+    def _record_click(self, count=1):
+        with self._click_stats_lock:
+            self._click_count += count
+
+    @Slot()
+    def _refresh_click_stats(self):
+        now = time.monotonic()
+        with self._click_stats_lock:
+            click_count = self._click_count
+            if self._click_run_started_at is not None:
+                elapsed = max(
+                    0.001,
+                    now - self._click_run_started_at,
+                )
+                average_clicks_per_second = click_count / elapsed
+            else:
+                average_clicks_per_second = (
+                    self._average_clicks_per_second
+                )
+        self._click_rate_samples.append((now, click_count))
+        cutoff = now - 1.0
+        while (
+            len(self._click_rate_samples) > 1
+            and self._click_rate_samples[1][0] <= cutoff
+        ):
+            self._click_rate_samples.popleft()
+        sample_time, sample_count = self._click_rate_samples[0]
+        elapsed = max(0.001, now - sample_time)
+        clicks_per_second = max(
+            0.0,
+            (click_count - sample_count) / elapsed,
+        )
+        stats = self.tr(
+            'status_click_stats',
+            self._format_compact_number(click_count),
+            self._format_compact_number(clicks_per_second),
+            self._format_compact_number(average_clicks_per_second),
+        )
+        self.click_stats_label.setText(stats)
+        self._render_status_text()
+
+    @staticmethod
+    def _format_compact_number(value):
+        for threshold, suffix in (
+            (1_000_000_000, "B"),
+            (1_000_000, "M"),
+            (1_000, "K"),
+        ):
+            if value >= threshold:
+                return f"{value / threshold:.1f}{suffix}"
+        return f"{value:.1f}" if isinstance(value, float) else str(value)
+
+    def _render_status_text(self):
+        if not hasattr(self, "status_label"):
+            return
+        available_width = self.status_label.width()
+        if available_width <= 0:
+            available_width = self.status_label.maximumWidth()
+        self.status_label.setText(
+            self.status_label.fontMetrics().elidedText(
+                self._status_text,
+                Qt.ElideRight,
+                available_width,
+            )
         )
 
     @Slot(str)
@@ -3598,6 +5819,11 @@ class MainWindow(QMainWindow):
     def start_clicker_safe(self):
         self.start_request_signal.emit()
 
+    def _signal_worker_stop(self):
+        worker = self.worker
+        if worker is not None:
+            worker.stop()
+
     def stop_clicker_safe(self):
         self.stop_request_signal.emit()
 
@@ -3610,6 +5836,14 @@ class MainWindow(QMainWindow):
             if item.widget():
                 item.widget().deleteLater()
         self.profile_widgets = []
+        has_profiles = bool(self.profiles)
+        self.profiles_empty_widget.setVisible(not has_profiles)
+        self.profile_scroll.setVisible(has_profiles)
+        self.profiles_search_button.setVisible(has_profiles)
+        if not has_profiles:
+            self.profiles_search_edit.clear()
+            self.profiles_search_edit.hide()
+            self.profiles_search_empty_label.hide()
         for p in self.profiles:
             widget = ProfileWidget(p, self.apply_profile, self.edit_profile, self.delete_profile, parent=self)
             self.profile_widgets.append(widget)
@@ -3644,16 +5878,103 @@ class MainWindow(QMainWindow):
         )
 
     def add_profile(self):
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle(self.tr('profile_add_title'))
+        dialog.setText(self.tr('profile_add_question'))
+        copy_button = dialog.addButton(
+            self.tr('profile_copy_settings'),
+            QMessageBox.YesRole,
+        )
+        defaults_button = dialog.addButton(
+            self.tr('profile_default_settings'),
+            QMessageBox.NoRole,
+        )
+        dialog.addButton(self.tr('dialog_cancel'), QMessageBox.RejectRole)
+        self.apply_theme()
+        dialog.exec()
+        if dialog.clickedButton() not in (copy_button, defaults_button):
+            return
+
         new_p = {
             "icon": "✨",
-            "name": f"Новый профиль {len(self.profiles)+1}",
+            "name": self.tr('profile_new_name').format(
+                len(self.profiles) + 1
+            ),
             "mode": self.tr('mode_instant'),
             "min": 1.0,
             "max": 1.0,
             "hold": 1.0,
             "between": 0.2,
-            "key": "SPACE"
+            "key": "SPACE",
+            "coordinates": [],
+            "coordinate_smooth": False,
+            "coordinate_move_duration": 0.3,
+            "coordinate_random_move_duration": False,
+            "coordinate_move_duration_max": 0.5,
+            "coordinate_cycle_interval": 0.5,
+            "coordinate_cycle_interval_max": 1.0,
+            "coordinate_random_cycle_interval": False,
+            "coordinate_random_click_interval": False,
         }
+        if dialog.clickedButton() == copy_button:
+            mode_names = [
+                self.MODE_INSTANT,
+                self.MODE_HOLD,
+                self.MODE_COMBO,
+                self.MODE_SEQUENCE,
+                self.MODE_COORDINATES,
+            ]
+            new_p.update({
+                "mode": mode_names[self.mode.currentIndex()],
+                "min": self._interval_value(self.min_interval_edit),
+                "max": self._interval_value(self.max_interval_edit),
+                "hold": self._interval_value(self.hold_time_edit),
+                "between": self._interval_value(self.between_edit),
+                "key": (
+                    self._button_to_str(self.click_key)
+                    if self.click_key_type == "mouse"
+                    else self._key_to_str(self.click_key)
+                ),
+                "sequence": self.sequence_edit.toPlainText(),
+                "coordinates": deepcopy(self.coordinate_points),
+                "coordinate_smooth": (
+                    self.coordinate_smooth_checkbox.isChecked()
+                ),
+                "coordinate_move_duration": self._interval_value(
+                    self.coordinate_move_duration_min_edit
+                    if self.coordinate_random_move_duration_checkbox.isChecked()
+                    else self.coordinate_move_duration_edit
+                ),
+                "coordinate_random_move_duration": (
+                    self.coordinate_random_move_duration_checkbox.isChecked()
+                ),
+                "coordinate_move_duration_max": self._interval_value(
+                    self.coordinate_move_duration_max_edit
+                ),
+                "coordinate_cycle_interval": self._interval_value(
+                    self.coordinate_cycle_interval_edit
+                ),
+                "coordinate_cycle_interval_max": self._interval_value(
+                    self.coordinate_cycle_interval_max_edit
+                ),
+                "coordinate_random_cycle_interval": (
+                    self.random_interval.isChecked()
+                ),
+                "coordinate_random_click_interval": (
+                    self.coordinate_random_click_interval_checkbox.isChecked()
+                ),
+                "random": (
+                    (
+                        self.coordinate_random_click_interval_checkbox.isChecked()
+                        if self.current_mode == self.MODE_COORDINATES
+                        else self.random_interval.isChecked()
+                    )
+                    and not interval_fields_match(
+                        self.min_interval_edit,
+                        self.max_interval_edit,
+                    )
+                ),
+            })
         self.profiles.append(new_p)
         self.save_profiles()
         self.refresh_profiles()
@@ -3712,11 +6033,14 @@ class MainWindow(QMainWindow):
             self.MODE_HOLD: self.MODE_HOLD,
             self.MODE_SEQUENCE: self.MODE_SEQUENCE,
             self.MODE_COMBO: self.MODE_COMBO,
+            self.MODE_COORDINATES: self.MODE_COORDINATES,
             self.tr('mode_instant'): self.MODE_INSTANT,
             self.tr('mode_hold'): self.MODE_HOLD,
             self.tr('mode_sequence'): self.MODE_SEQUENCE,
             self.tr('mode_combo'): self.MODE_COMBO,
+            self.tr('mode_coordinates'): self.MODE_COORDINATES,
             "Обычный клик": self.MODE_INSTANT,
+            "Coordinate clicks": self.MODE_COORDINATES,
         }
         mode_key = mode_aliases.get(m_str, m_str)
         for i in range(self.mode.count()):
@@ -3727,6 +6051,79 @@ class MainWindow(QMainWindow):
 
         if "sequence" in profile:
             self.sequence_edit.setPlainText(profile["sequence"])
+        self.coordinate_points = deepcopy(
+            profile.get("coordinates", [])
+        )
+        self._refresh_coordinate_points_label()
+        self.coordinate_smooth_checkbox.setChecked(
+            profile.get("coordinate_smooth", False)
+        )
+        self.coordinate_random_move_duration_checkbox.setChecked(
+            profile.get("coordinate_random_move_duration", False)
+        )
+        profile_move_duration = max(
+            0.0,
+            float(profile.get("coordinate_move_duration", 0.3)),
+        )
+        self.coordinate_move_duration_edit.setText(
+            format_interval_value(profile_move_duration)
+        )
+        self.coordinate_move_duration_min_edit.setText(
+            format_interval_value(profile_move_duration)
+        )
+        self.coordinate_move_duration_max_edit.setText(
+            format_interval_value(
+                max(
+                    0.0,
+                    float(
+                        profile.get(
+                            "coordinate_move_duration_max",
+                            max(0.5, profile_move_duration),
+                        )
+                    ),
+                )
+            )
+        )
+        self.coordinate_cycle_interval_edit.setText(
+            format_interval_value(
+                max(0.0, float(profile.get("coordinate_cycle_interval", 0.5)))
+            )
+        )
+        self.coordinate_cycle_interval_max_edit.setText(
+            format_interval_value(
+                max(
+                    0.0,
+                    float(
+                        profile.get(
+                            "coordinate_cycle_interval_max",
+                            max(
+                                1.0,
+                                float(
+                                    profile.get(
+                                        "coordinate_cycle_interval",
+                                        0.5,
+                                    )
+                                ),
+                            ),
+                        )
+                    ),
+                )
+            )
+        )
+        is_coordinate_profile = mode_key == self.MODE_COORDINATES
+        self.random_interval.setChecked(
+            profile.get("coordinate_random_cycle_interval", False)
+            if is_coordinate_profile
+            else profile.get("random", True) and not same_bounds
+        )
+        self.coordinate_random_click_interval_checkbox.setChecked(
+            profile.get(
+                "coordinate_random_click_interval",
+                profile.get("random", True),
+            )
+            and not same_bounds
+        )
+        self.update_coordinate_move_ui()
 
         # --- Интеграция клавиши из профиля ---
         key_str = profile["key"]
@@ -3746,23 +6143,13 @@ class MainWindow(QMainWindow):
 
         self.save_settings()
 
-    def default_profiles(self):
-        return [
-            {"icon": "🪱", "name": "Копка червей", "mode": self.tr('mode_instant'), "min": 8.6, "max": 9.0, "key": "1"},
-            {"icon": "🎰", "name": "Казино", "mode": self.tr('mode_instant'), "min": 8.0, "max": 9.0, "key": "F"},
-            {"icon": "⛏️", "name": "Лесоруб / шахта", "mode": self.tr('mode_instant'), "min": 0.01, "max": 0.01, "key": "ЛКМ"},
-            {"icon": "🧰", "name": "ИРП", "mode": self.tr('mode_instant'), "min": 7200, "max": 7200, "key": "2"}
-        ]
-
     def load_profiles(self):
         profile_file = PROFILES_FILE
         if not profile_file.exists() and LEGACY_PROFILES_FILE.exists():
             profile_file = LEGACY_PROFILES_FILE
 
         if not profile_file.exists():
-            profiles = self.default_profiles()
-            self._write_profiles(profiles)
-            return profiles
+            return []
 
         try:
             with profile_file.open("r", encoding="utf-8") as f:
@@ -3773,9 +6160,11 @@ class MainWindow(QMainWindow):
                 raise ValueError("profiles.json должен содержать список профилей")
             return profiles
         except (OSError, json.JSONDecodeError, ValueError):
-            profiles = self.default_profiles()
-            self._write_profiles(profiles)
-            return profiles
+            logging.getLogger(__name__).exception(
+                "Could not load profiles from %s",
+                profile_file,
+            )
+            return []
 
     def _write_profiles(self, profiles):
         temp_file = PROFILES_FILE.with_suffix(".tmp")
@@ -3812,8 +6201,16 @@ class MainWindow(QMainWindow):
                 if self.click_key_type == "mouse"
                 else self._key_to_str(self.click_key)
             )
+            click_limit_text = self.click_limit_edit.text()
+            click_limit = (
+                int(click_limit_text)
+                if click_limit_text.isdecimal()
+                else 100
+            )
+            if not 1 <= click_limit <= 999999999:
+                click_limit = 100
             data = {
-                "settings_version": 5,
+                "settings_version": 8,
                 "window": {"width": self.width(), "height": self.height()},
                 "mode_idx": self.mode.currentIndex(),
                 "min_int": self._interval_value(self.min_interval_edit),
@@ -3821,13 +6218,51 @@ class MainWindow(QMainWindow):
                 "hold_t": self._interval_value(self.hold_time_edit),
                 "btw_t": self._interval_value(self.between_edit),
                 "seq_raw": self.sequence_edit.toPlainText(),
-                "random_i": (
+                "coordinate_smooth": (
+                    self.coordinate_smooth_checkbox.isChecked()
+                ),
+                "coordinate_move_duration": self._interval_value(
+                    self.coordinate_move_duration_min_edit
+                    if self.coordinate_random_move_duration_checkbox.isChecked()
+                    else self.coordinate_move_duration_edit
+                ),
+                "coordinate_random_move_duration": (
+                    self.coordinate_random_move_duration_checkbox.isChecked()
+                ),
+                "coordinate_move_duration_max": self._interval_value(
+                    self.coordinate_move_duration_max_edit
+                ),
+                "coordinate_cycle_interval": self._interval_value(
+                    self.coordinate_cycle_interval_edit
+                ),
+                "coordinate_cycle_interval_max": self._interval_value(
+                    self.coordinate_cycle_interval_max_edit
+                ),
+                "coordinate_random_cycle_interval": (
                     self.random_interval.isChecked()
+                    if self.current_mode == self.MODE_COORDINATES
+                    else False
+                ),
+                "coordinate_random_click_interval": (
+                    self.coordinate_random_click_interval_checkbox.isChecked()
+                    if self.current_mode == self.MODE_COORDINATES
+                    else False
+                ),
+                "random_i": (
+                    (
+                        self.coordinate_random_click_interval_checkbox.isChecked()
+                        if self.current_mode == self.MODE_COORDINATES
+                        else self.random_interval.isChecked()
+                    )
                     and not interval_fields_match(
                         self.min_interval_edit,
                         self.max_interval_edit,
                     )
                 ),
+                "click_limit_enabled": (
+                    self.click_limit_checkbox.isChecked()
+                ),
+                "click_limit": click_limit,
                 "lang": self.language,
                 "theme": self.theme,
                 "start_hotkey": start_str,
@@ -3890,7 +6325,7 @@ class MainWindow(QMainWindow):
             with open(settings_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
             legacy_settings = data.get("settings_version", 1) < 3
-            settings_upgrade = data.get("settings_version", 1) < 5
+            settings_upgrade = data.get("settings_version", 1) < 8
             if legacy_settings:
                 data = {
                     "window": {"width": 1200, "height": 780},
@@ -3900,7 +6335,17 @@ class MainWindow(QMainWindow):
                     "hold_t": 1.0,
                     "btw_t": 0.2,
                     "seq_raw": "",
+                    "coordinate_smooth": False,
+                    "coordinate_move_duration": 0.3,
+                    "coordinate_random_move_duration": False,
+                    "coordinate_move_duration_max": 0.5,
+                    "coordinate_cycle_interval": 0.5,
+                    "coordinate_cycle_interval_max": 1.0,
+                    "coordinate_random_cycle_interval": False,
+                    "coordinate_random_click_interval": False,
                     "random_i": True,
+                    "click_limit_enabled": False,
+                    "click_limit": 100,
                     "lang": "ru",
                     "theme": "dark",
                     "start_hotkey": "F6",
@@ -3910,6 +6355,32 @@ class MainWindow(QMainWindow):
                     "click_key_type": "keyboard",
                     "hotkeys_enabled": True,
                 }
+            click_limit_enabled = data.get(
+                "click_limit_enabled",
+                False,
+            )
+            if not isinstance(click_limit_enabled, bool):
+                click_limit_enabled = False
+            click_limit = data.get("click_limit", 100)
+            if (
+                isinstance(click_limit, bool)
+                or not isinstance(click_limit, int)
+                or not 1 <= click_limit <= 999999999
+            ):
+                click_limit = 100
+            limit_signals_blocked = (
+                self.click_limit_checkbox.blockSignals(True)
+            )
+            try:
+                self.click_limit_checkbox.setChecked(
+                    click_limit_enabled
+                )
+            finally:
+                self.click_limit_checkbox.blockSignals(
+                    limit_signals_blocked
+                )
+            self.click_limit_edit.setText(str(click_limit))
+            self.click_limit_edit.setEnabled(click_limit_enabled)
             if "window" in data:
                 self.resize(data["window"]["width"], data["window"]["height"])
             self.mode.setCurrentIndex(data.get("mode_idx", 0))
@@ -3932,13 +6403,124 @@ class MainWindow(QMainWindow):
             self.hold_time_edit.setText(str(max(0.0, float(data.get("hold_t", 1.0)))))
             self.between_edit.setText(str(max(0.0, float(data.get("btw_t", 0.2)))))
             self.sequence_edit.setPlainText(data.get("seq_raw", ""))
+            coordinate_smooth = data.get("coordinate_smooth", False)
+            self.coordinate_smooth_checkbox.setChecked(
+                coordinate_smooth
+                if isinstance(coordinate_smooth, bool)
+                else False
+            )
+            coordinate_move_duration = data.get(
+                "coordinate_move_duration",
+                0.3,
+            )
+            if (
+                isinstance(coordinate_move_duration, bool)
+                or not isinstance(coordinate_move_duration, (int, float))
+                or not math.isfinite(coordinate_move_duration)
+                or coordinate_move_duration < 0
+                or coordinate_move_duration > 999999999
+            ):
+                coordinate_move_duration = 0.3
+            self.coordinate_move_duration_edit.setText(
+                format_interval_value(coordinate_move_duration)
+            )
+            coordinate_random_move_duration = data.get(
+                "coordinate_random_move_duration",
+                False,
+            )
+            self.coordinate_random_move_duration_checkbox.setChecked(
+                coordinate_random_move_duration
+                if isinstance(coordinate_random_move_duration, bool)
+                else False
+            )
+            coordinate_move_duration_max = data.get(
+                "coordinate_move_duration_max",
+                max(0.5, coordinate_move_duration),
+            )
+            if (
+                isinstance(coordinate_move_duration_max, bool)
+                or not isinstance(
+                    coordinate_move_duration_max,
+                    (int, float),
+                )
+                or not math.isfinite(coordinate_move_duration_max)
+                or coordinate_move_duration_max < 0
+                or coordinate_move_duration_max > 999999999
+            ):
+                coordinate_move_duration_max = coordinate_move_duration
+            self.coordinate_move_duration_min_edit.setText(
+                format_interval_value(coordinate_move_duration)
+            )
+            self.coordinate_move_duration_max_edit.setText(
+                format_interval_value(coordinate_move_duration_max)
+            )
+            coordinate_cycle_interval = data.get(
+                "coordinate_cycle_interval",
+                0.5,
+            )
+            if (
+                isinstance(coordinate_cycle_interval, bool)
+                or not isinstance(coordinate_cycle_interval, (int, float))
+                or not math.isfinite(coordinate_cycle_interval)
+                or coordinate_cycle_interval < 0
+                or coordinate_cycle_interval > 999999999
+            ):
+                coordinate_cycle_interval = 0.5
+            self.coordinate_cycle_interval_edit.setText(
+                format_interval_value(coordinate_cycle_interval)
+            )
+            coordinate_cycle_interval_max = data.get(
+                "coordinate_cycle_interval_max",
+                max(1.0, coordinate_cycle_interval),
+            )
+            if (
+                isinstance(coordinate_cycle_interval_max, bool)
+                or not isinstance(
+                    coordinate_cycle_interval_max,
+                    (int, float),
+                )
+                or not math.isfinite(coordinate_cycle_interval_max)
+                or coordinate_cycle_interval_max < 0
+                or coordinate_cycle_interval_max > 999999999
+            ):
+                coordinate_cycle_interval_max = max(
+                    1.0,
+                    coordinate_cycle_interval,
+                )
+            self.coordinate_cycle_interval_max_edit.setText(
+                format_interval_value(coordinate_cycle_interval_max)
+            )
+            coordinate_random_cycle_interval = data.get(
+                "coordinate_random_cycle_interval",
+                False,
+            )
+            self.random_interval.setChecked(
+                coordinate_random_cycle_interval
+                if isinstance(coordinate_random_cycle_interval, bool)
+                else False
+            )
+            coordinate_random_click_interval = data.get(
+                "coordinate_random_click_interval",
+                data.get("random_i", True),
+            )
+            self.coordinate_random_click_interval_checkbox.setChecked(
+                coordinate_random_click_interval
+                if isinstance(coordinate_random_click_interval, bool)
+                else False
+            )
+            self.update_coordinate_move_ui()
             same_bounds = interval_fields_match(
                 self.min_interval_edit,
                 self.max_interval_edit,
             )
-            self.random_interval.setChecked(
-                data.get("random_i", True) and not same_bounds
-            )
+            if self.current_mode != self.MODE_COORDINATES:
+                self.random_interval.setChecked(
+                    data.get("random_i", True) and not same_bounds
+                )
+            elif same_bounds:
+                self.coordinate_random_click_interval_checkbox.setChecked(
+                    False
+                )
             self.update_random_interval_ui()
             self.language = data.get("lang", "ru")
             stored_theme = data.get("theme", "dark")

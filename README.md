@@ -1,6 +1,6 @@
 # 🍋 Lim0n4ikzGames Clicker
 
-**Lim0n4ikzGames Clicker** is an automatic clicker for Windows with support for keyboard keys, mouse buttons, sequences, and key combinations.
+**Lim0n4ikzGames Clicker** is an automatic clicker for Windows with support for keyboard keys, mouse buttons, sequences, key combinations, and coordinate-based clicks.
 
 The application allows you to automate repetitive actions using customizable intervals, hotkeys, and profiles.
 
@@ -16,6 +16,9 @@ The application allows you to automate repetitive actions using customizable int
 * 🎲 Randomized intervals between actions
 * 🔒 Key hold mode
 * ⚡ Instant press mode
+* 📍 Repeatable coordinate-click sequences
+* 📊 Click counter, current and per-run average CPS; the average stays visible after stopping
+* 🎯 Automatically stop after a specified number of clicks
 * 🎮 Start and stop hotkeys
 * 💾 Automatic settings saving
 * 📋 Custom user profiles
@@ -35,7 +38,7 @@ The application allows you to automate repetitive actions using customizable int
 
 ## 🎮 Operation Modes
 
-The application supports four operation modes.
+The application supports five operation modes.
 
 ### 1. 🔒 Hold Key
 
@@ -114,6 +117,12 @@ Keys in a combination are separated using:
 
 ---
 
+### 5. 📍 Coordinate Clicks
+
+Records an ordered sequence of clicks and swipes on a selected monitor. Click the overlay to add a click point, or press `F8` to capture the current cursor position. To record a swipe, hold `Shift` and drag; choose which mouse button will be held during playback in the recorder. `Backspace` removes the last action both while recording and in the editor afterward; `Esc` finishes recording. Clicks and swipes are replayed in recording order and saved with the profile. With smooth movement enabled, the cursor moves to each next action before performing it and stays at the end of a swipe until the next action. Smooth movement can use a fixed or randomized duration; when it is enabled, no separate interval between clicks is used. Without smooth movement, a fixed or randomized interval between actions can be set. The interval between complete cycles is configured separately.
+
+---
+
 ## ⌨️ Hotkeys
 
 The default hotkeys are:
@@ -173,16 +182,7 @@ The application includes a profile system.
 
 A profile allows you to save a separate clicker configuration and quickly switch between different sets of settings.
 
-The project includes the following default profiles:
-
-| Profile                | Mode          |    Interval | Key   |
-| ---------------------- | ------------- | ----------: | ----- |
-| 🪱 Worm Digging        | Instant Press |   `8.6–9.0` | `1`   |
-| 🎰 Casino              | Instant Press |   `8.0–9.0` | `F`   |
-| ⛏️ Lumberjack / Mining | Instant Press | `0.01–0.01` | `LMB` |
-| 🧰 IRP                 | Instant Press | `7200–7200` | `2`   |
-
-Users can create and modify their own profiles.
+The application is distributed without initial profiles. The list starts empty until users add their own profiles. Existing saved profiles are preserved when updating the application.
 
 ---
 
