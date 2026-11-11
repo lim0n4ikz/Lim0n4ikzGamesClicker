@@ -1,5 +1,5 @@
 {
-  "latest_version": "2.11.7",
+  "latest_version": "2.12.9",
   "download_url": "https://github.com/lim0n4ikz/Lim0n4ikzGamesClicker/releases/latest/download/Lim0n4ikzGamesClickerSetup.exe",
   "releases": [
     {
@@ -118,6 +118,21 @@
           "If a profile has no recorded keys, its card displays “Empty”.",
           "Instant-combo profile cards now show only the first two keys.",
           "Added standard application icon sizes for correct display in Windows."
+        ]
+      }
+    },
+    {
+      "version": "2.12.9",
+      "changes": {
+        "ru": [
+          "Исправлено начальное движение курсора перед свайпом в режиме координат: теперь он сразу переходит к первой точке без лишнего движения в сторону.",
+          "Параметры движения и интервалов в режиме координат отображаются только тогда, когда они используются; длительность свайпа доступна и при отключённом плавном перемещении.",
+          "Окно настроек разделено на две колонки; уплотнены интервалы и сокращена его минимальная высота."
+        ],
+        "en": [
+          "Fixed cursor movement before a coordinate-mode swipe: it now jumps directly to the starting point without an unintended sideways movement.",
+          "Coordinate-mode movement and interval options are shown only when applicable; swipe duration remains available when smooth cursor movement is disabled.",
+          "Reorganized settings into two columns, tightened spacing, and reduced the minimum window height."
         ]
       }
     }

@@ -19,7 +19,7 @@ from decimal import Decimal, InvalidOperation
 from PySide6.QtCore import Qt, QEvent, QTimer, QThread, Signal, Slot, QLocale, QUrl, QObject
 from PySide6.QtGui import (
     QFont, QAction, QCursor, QIcon, QDoubleValidator, QIntValidator,
-    QDesktopServices, QColor,
+    QDesktopServices, QColor, QPalette,
     QPainter, QPen, QGuiApplication,
 )
 from PySide6.QtGui import QValidator
@@ -44,6 +44,13 @@ def interpolate_cursor_position(start, end, progress):
     return tuple(
         round(source + (target - source) * eased)
         for source, target in zip(start, end)
+    )
+
+
+def has_coordinate_swipe(actions):
+    return any(
+        isinstance(action, dict) and action.get("type") == "swipe"
+        for action in actions
     )
 
 
@@ -478,7 +485,7 @@ if sys.platform == "win32":
 # ============================================================
 
 APP_NAME = "Lim0n4ikzGames Clicker"
-APP_VERSION = "2.11.7"
+APP_VERSION = "2.12.9"
 BUG_REPORT_URL = "https://forms.gle/MZvS2rtF4Sae8eAV6"
 PROFILE_FILE_FORMAT = "lim0n4ikz-clicker-profiles"
 MAX_PROFILE_FILE_SIZE = 5 * 1024 * 1024
@@ -640,6 +647,7 @@ if sys.platform == "win32":
 
 STYLE = """
 QMainWindow { background: #060d16; }
+QDialog { background: #060d16; }
 QWidget { color: #eef5ff; font-family: "Segoe UI"; font-size: 13px; }
 QFrame#panel { background: #0b1725; border: 1px solid #223952; border-radius: 14px; }
 QLabel#title { font-size: 23px; font-weight: 700; }
@@ -1135,7 +1143,12 @@ class ProfileEditDialog(QDialog):
 
     def accept(self):
         if (
-            self.coordinate_random_move_duration_checkbox.isChecked()
+            self.mode_combo.currentIndex() == 4
+            and (
+                self.coordinate_smooth_checkbox.isChecked()
+                or has_coordinate_swipe(self.coordinate_points)
+            )
+            and self.coordinate_random_move_duration_checkbox.isChecked()
             and self._interval_value(
                 self.coordinate_move_duration_min_edit
             )
@@ -1308,10 +1321,15 @@ class ProfileEditDialog(QDialog):
         )
 
     def update_coordinate_move_ui(self):
-        show_duration = (
-            self.mode_combo.currentIndex() == 4
-            and self.coordinate_smooth_checkbox.isChecked()
+        is_coordinate_mode = self.mode_combo.currentIndex() == 4
+        uses_coordinate_movement = (
+            is_coordinate_mode
+            and (
+                self.coordinate_smooth_checkbox.isChecked()
+                or has_coordinate_swipe(self.coordinate_points)
+            )
         )
+        show_duration = uses_coordinate_movement
         random_duration = (
             show_duration
             and self.coordinate_random_move_duration_checkbox.isChecked()
@@ -1330,9 +1348,8 @@ class ProfileEditDialog(QDialog):
         self.coordinate_move_duration_max_label.setVisible(random_duration)
         self.coordinate_move_duration_max_edit.setVisible(random_duration)
         self.coordinate_movement_group.setVisible(
-            self.mode_combo.currentIndex() == 4
+            is_coordinate_mode
         )
-        is_coordinate_mode = self.mode_combo.currentIndex() == 4
         self.coordinate_cycle_interval_label.setVisible(is_coordinate_mode)
         self.coordinate_cycle_interval_edit.setVisible(is_coordinate_mode)
         self.coordinate_cycle_interval_max_label.setVisible(
@@ -1416,10 +1433,12 @@ class ProfileEditDialog(QDialog):
         if points is not None:
             self.coordinate_points = points
             self._refresh_coordinate_summary()
+            self.update_coordinate_move_ui()
 
     def clear_coordinate_points(self):
         self.coordinate_points.clear()
         self._refresh_coordinate_summary()
+        self.update_coordinate_move_ui()
 
     def _refresh_coordinate_summary(self):
         self.coordinate_points_label.setText(
@@ -1764,22 +1783,7 @@ class ClickerWorker(QThread):
         if not points or self.stop_event.is_set():
             return False
         button = action["button"]
-        if self.c.coordinate_smooth_enabled:
-            move_duration = (
-                random.uniform(
-                    self.c.coordinate_move_duration,
-                    self.c.coordinate_move_duration_max,
-                )
-                if self.c.coordinate_random_move_duration
-                else self.c.coordinate_move_duration
-            )
-            if not self.move_cursor_smoothly(
-                *points[0],
-                move_duration,
-            ):
-                return False
-        else:
-            self.c.mouse_controller.position = points[0]
+        self.c.mouse_controller.position = points[0]
         pressed = False
         with self.c._sim_lock:
             self.c._simulating = True
@@ -2614,15 +2618,20 @@ class MainWindow(QMainWindow):
                 'settings_theme': "Тема оформления",
                 'emergency_stop_title': "Аварийная остановка",
                 'emergency_stop_warning': (
-                    "Эта клавиша всегда активна, даже если обычные бинды выключены "
-                    "или окно свёрнуто. Рекомендуется назначить отдельную клавишу, "
-                    "например Pause/Break или F12. Не используйте клавишу запуска "
-                    "или часто используемую в игре клавишу."
+                    "Клавиша активна всегда, даже если бинды выключены или "
+                    "окно свёрнуто. Рекомендуем Pause/Break или F12. Не "
+                    "выбирайте клавишу запуска или часто используемую в игре."
                 ),
                 'emergency_stop_assign': "Назначить клавишу",
                 'emergency_stop_capture': "Нажмите клавишу...",
                 'settings_updates_section': "Обновления",
+                'settings_general_section': "Основное",
                 'settings_bug_report_section': "Сообщить об ошибке",
+                'settings_bug_report_description': (
+                    "Обратная связь помогает нам становиться лучше. "
+                    "Нашли ошибку или хотите предложить новую функцию? "
+                    "Напишите нам!"
+                ),
                 'theme_dark': "Тёмная",
                 'theme_ocean': "Бирюзовая",
                 'theme_purple': "Фиолетовая",
@@ -2789,10 +2798,10 @@ class MainWindow(QMainWindow):
                 'label_min': "Min задержка, сек.",
                 'label_max': "Max задержка, сек.",
                 'label_single_interval': "Интервал, сек.",
-                'label_coordinate_min': "Мин. интервал между кликами, сек.",
-                'label_coordinate_max': "Макс. интервал между кликами, сек.",
-                'label_coordinate_single_interval': "Интервал между кликами, сек.",
-                'label_coordinate_random_interval': "Случайный интервал между кликами",
+                'label_coordinate_min': "Мин. интервал между действиями, сек.",
+                'label_coordinate_max': "Макс. интервал между действиями, сек.",
+                'label_coordinate_single_interval': "Интервал между действиями, сек.",
+                'label_coordinate_random_interval': "Случайный интервал между действиями",
                 'label_coordinate_random_cycle_interval': "Случайный интервал между циклами",
                 'label_random_interval': "Включить случайный интервал",
                 'click_limit_enabled': "Остановиться после",
@@ -2854,14 +2863,18 @@ class MainWindow(QMainWindow):
                 'emergency_stop_title': "Emergency stop",
                 'emergency_stop_warning': (
                     "This key is always active, even when regular hotkeys are "
-                    "disabled or the window is minimized. Use a dedicated key "
-                    "such as Pause/Break or F12. Avoid the start key and keys "
-                    "you frequently use in your game."
+                    "disabled or the window is minimized. Use Pause/Break or "
+                    "F12; avoid the start key and keys you use often in games."
                 ),
                 'emergency_stop_assign': "Assign key",
                 'emergency_stop_capture': "Press a key...",
                 'settings_updates_section': "Updates",
+                'settings_general_section': "General",
                 'settings_bug_report_section': "Bug report",
+                'settings_bug_report_description': (
+                    "Your feedback helps us improve. Found a bug? "
+                    "Want to suggest a new feature? Let us know!"
+                ),
                 'theme_dark': "Dark",
                 'theme_ocean': "Turquoise",
                 'theme_purple': "Purple",
@@ -3025,10 +3038,10 @@ class MainWindow(QMainWindow):
                 'label_min': "Min delay, sec.",
                 'label_max': "Max delay, sec.",
                 'label_single_interval': "Interval, sec.",
-                'label_coordinate_min': "Min interval between clicks, sec.",
-                'label_coordinate_max': "Max interval between clicks, sec.",
-                'label_coordinate_single_interval': "Interval between clicks, sec.",
-                'label_coordinate_random_interval': "Randomize interval between clicks",
+                'label_coordinate_min': "Min interval between actions, sec.",
+                'label_coordinate_max': "Max interval between actions, sec.",
+                'label_coordinate_single_interval': "Interval between actions, sec.",
+                'label_coordinate_random_interval': "Randomize interval between actions",
                 'label_coordinate_random_cycle_interval': "Randomize interval between cycles",
                 'label_random_interval': "Enable random interval",
                 'click_limit_enabled': "Stop after",
@@ -3101,6 +3114,9 @@ class MainWindow(QMainWindow):
         self.title.setText(self.tr('title'))
         self.subtitle.setText(self.tr('subtitle'))
         self.settings_dialog.setWindowTitle(self.tr('settings_title'))
+        self.settings_general_title_label.setText(
+            self.tr('settings_general_section')
+        )
         self.settings_version_label.setText(
             self.tr('settings_version').format(APP_VERSION)
         )
@@ -3114,6 +3130,9 @@ class MainWindow(QMainWindow):
         )
         self.settings_bug_report_title_label.setText(
             self.tr('settings_bug_report_section')
+        )
+        self.settings_bug_report_description_label.setText(
+            self.tr('settings_bug_report_description')
         )
         self.emergency_stop_title_label.setText(
             self.tr('emergency_stop_title')
@@ -3335,10 +3354,15 @@ class MainWindow(QMainWindow):
         self.save_settings()
 
     def update_coordinate_move_ui(self):
-        show_duration = (
-            self.current_mode == self.MODE_COORDINATES
-            and self.coordinate_smooth_checkbox.isChecked()
+        is_coordinate_mode = self.current_mode == self.MODE_COORDINATES
+        uses_coordinate_movement = (
+            is_coordinate_mode
+            and (
+                self.coordinate_smooth_checkbox.isChecked()
+                or has_coordinate_swipe(self.coordinate_points)
+            )
         )
+        show_duration = uses_coordinate_movement
         random_duration = (
             show_duration
             and self.coordinate_random_move_duration_checkbox.isChecked()
@@ -3357,9 +3381,9 @@ class MainWindow(QMainWindow):
         self.coordinate_move_duration_max_label.setVisible(random_duration)
         self.coordinate_move_duration_max_edit.setVisible(random_duration)
         self.coordinate_movement_group.setVisible(
-            self.current_mode == self.MODE_COORDINATES
+            is_coordinate_mode
         )
-        show_cycle_interval = self.current_mode == self.MODE_COORDINATES
+        show_cycle_interval = is_coordinate_mode
         self.coordinate_cycle_interval_label.setVisible(show_cycle_interval)
         self.coordinate_cycle_interval_edit.setVisible(show_cycle_interval)
         random_cycle = self.random_interval.isChecked()
@@ -3415,6 +3439,19 @@ class MainWindow(QMainWindow):
             app.setStyleSheet(
                 theme_stylesheet(self.theme, self._responsive_font_size)
             )
+        if hasattr(self, "settings_dialog"):
+            dialog_palette = self.settings_dialog.palette()
+            dialog_palette.setColor(
+                QPalette.Window,
+                QColor(
+                    THEME_COLOR_MAPS[self.theme].get(
+                        "#060d16",
+                        "#060d16",
+                    )
+                ),
+            )
+            self.settings_dialog.setPalette(dialog_palette)
+            self.settings_dialog.setAutoFillBackground(True)
         for widget in self.findChildren(QWidget):
             if widget is self.status_label:
                 continue
@@ -3434,7 +3471,6 @@ class MainWindow(QMainWindow):
             self.status_label.setStyleSheet(
                 f"color: {status_color}; font-weight: 600;"
             )
-
     def on_theme_changed(self, index):
         selected_theme = self.theme_combo.itemData(index)
         if selected_theme not in THEME_COLOR_MAPS:
@@ -3673,6 +3709,15 @@ class MainWindow(QMainWindow):
             )
         if not isinstance(mode, str) or mode not in supported_modes:
             raise ValueError(self.tr('profile_mode_unknown', name))
+        coordinate_modes = {
+            self.MODE_COORDINATES,
+            "Coordinate clicks",
+        }
+        coordinate_modes.update(
+            self.translations[language]["mode_coordinates"]
+            for language in ("ru", "en")
+        )
+        is_coordinate_mode = mode in coordinate_modes
 
         def numeric_value(field, default=None):
             value = profile.get(field, default)
@@ -3777,17 +3822,6 @@ class MainWindow(QMainWindow):
                 self.tr('profile_random_invalid', name)
             )
         if (
-            coordinate_random_move_duration
-            and coordinate_move_duration > coordinate_move_duration_max
-        ):
-            raise ValueError(
-                self.tr(
-                    'profile_value_invalid',
-                    "coordinate_move_duration_max",
-                    name,
-                )
-            )
-        if (
             coordinate_random_cycle_interval
             and coordinate_cycle_interval > coordinate_cycle_interval_max
         ):
@@ -3799,7 +3833,9 @@ class MainWindow(QMainWindow):
                 )
             )
         if (
-            coordinate_random_click_interval
+            is_coordinate_mode
+            and not coordinate_smooth
+            and coordinate_random_click_interval
             and minimum > maximum
         ):
             raise ValueError(
@@ -3877,6 +3913,26 @@ class MainWindow(QMainWindow):
                 )
             else:
                 raise ValueError(self.tr('profile_coordinates_invalid', name))
+
+        uses_coordinate_movement = (
+            is_coordinate_mode
+            and (
+                coordinate_smooth
+                or has_coordinate_swipe(normalized_coordinates)
+            )
+        )
+        if (
+            uses_coordinate_movement
+            and coordinate_random_move_duration
+            and coordinate_move_duration > coordinate_move_duration_max
+        ):
+            raise ValueError(
+                self.tr(
+                    'profile_value_invalid',
+                    "coordinate_move_duration_max",
+                    name,
+                )
+            )
 
         return {
             "icon": icon,
@@ -4052,29 +4108,47 @@ class MainWindow(QMainWindow):
     def build_settings_dialog(self):
         self.settings_dialog = QDialog(self)
         self.settings_dialog.setWindowTitle(self.tr('settings_title'))
-        self.settings_dialog.setMinimumWidth(360)
-
+        self.settings_dialog.setMinimumWidth(700)
         layout = QVBoxLayout(self.settings_dialog)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(8)
+        columns_layout = QHBoxLayout()
+        columns_layout.setSpacing(16)
+        left_column = QVBoxLayout()
+        right_column = QVBoxLayout()
+        left_column.setSpacing(10)
+        right_column.setSpacing(10)
+        columns_layout.addLayout(left_column, 1)
+        columns_layout.addLayout(right_column, 1)
+        layout.addLayout(columns_layout, 1)
 
-        def add_separator():
-            separator = QFrame()
-            separator.setFixedHeight(1)
-            separator.setStyleSheet(
-                "background-color: #eef5ff; border: none;"
-            )
-            layout.addWidget(separator)
+        def add_section(column, title_key, attribute):
+            section = QVBoxLayout()
+            section.setSpacing(4)
+            title = QLabel(self.tr(title_key))
+            title.setObjectName("section")
+            setattr(self, attribute, title)
+            section.addWidget(title)
+            column.addLayout(section)
+            return section
 
+        general_section = add_section(
+            left_column,
+            'settings_general_section',
+            'settings_general_title_label',
+        )
         language_layout = QHBoxLayout()
+        language_layout.setSpacing(6)
         self.lang_label = QLabel(self.tr('language'))
-        self.lang_label.setObjectName("section")
         self.lang_combo = QComboBox()
         self.lang_combo.addItems([self.tr('lang_ru'), self.tr('lang_en')])
         self.lang_combo.currentIndexChanged.connect(self.on_language_changed)
-        language_layout.addWidget(self.lang_label)
+        language_layout.addWidget(self.lang_label, 1)
         language_layout.addWidget(self.lang_combo, 1)
-        layout.addLayout(language_layout)
+        general_section.addLayout(language_layout)
 
         theme_layout = QHBoxLayout()
+        theme_layout.setSpacing(6)
         self.settings_theme_label = QLabel(self.tr('settings_theme'))
         self.settings_theme_label.setObjectName("section")
         self.theme_combo = QComboBox()
@@ -4088,69 +4162,29 @@ class MainWindow(QMainWindow):
         self.theme_combo.addItem(self.tr('theme_red'), "red")
         self.theme_combo.addItem(self.tr('theme_pink'), "pink")
         self.theme_combo.currentIndexChanged.connect(self.on_theme_changed)
-        theme_layout.addWidget(self.settings_theme_label)
+        theme_layout.addWidget(self.settings_theme_label, 1)
         theme_layout.addWidget(self.theme_combo, 1)
-        layout.addLayout(theme_layout)
+        general_section.addLayout(theme_layout)
 
-        add_separator()
-        self.settings_updates_title_label = QLabel(
-            self.tr('settings_updates_section')
+        emergency_section = add_section(
+            left_column,
+            'emergency_stop_title',
+            'emergency_stop_title_label',
         )
-        self.settings_updates_title_label.setObjectName("section")
-        layout.addWidget(self.settings_updates_title_label)
-        self.update_check_button = QPushButton(self.tr('update_check_button'))
-        self.update_check_button.clicked.connect(
-            lambda: self.check_for_updates(manual=True)
-        )
-        layout.addWidget(self.update_check_button)
-
-        add_separator()
-        self.settings_bug_report_title_label = QLabel(
-            self.tr('settings_bug_report_section')
-        )
-        self.settings_bug_report_title_label.setObjectName("section")
-        layout.addWidget(self.settings_bug_report_title_label)
-        self.bug_report_button = QPushButton(self.tr('bug_report_button'))
-        self.bug_report_button.clicked.connect(self.open_bug_report_form)
-        layout.addWidget(self.bug_report_button)
-
-        add_separator()
-
-        self.profiles_transfer_title_label = QLabel(
-            self.tr('profiles_transfer_title')
-        )
-        self.profiles_transfer_title_label.setObjectName("section")
-        layout.addWidget(self.profiles_transfer_title_label)
-
-        self.profiles_manage_button = QPushButton(
-            self.tr('profiles_manage_button')
-        )
-        self.profiles_manage_button.clicked.connect(self.manage_profiles)
-        layout.addWidget(self.profiles_manage_button)
-
-        self.profiles_export_button = QPushButton(self.tr('profiles_export'))
-        self.profiles_export_button.clicked.connect(self.export_profiles)
-        layout.addWidget(self.profiles_export_button)
-
-        self.profiles_import_button = QPushButton(self.tr('profiles_import'))
-        self.profiles_import_button.clicked.connect(self.import_profiles)
-        layout.addWidget(self.profiles_import_button)
-
-        add_separator()
-        self.emergency_stop_title_label = QLabel(
-            self.tr('emergency_stop_title')
-        )
-        self.emergency_stop_title_label.setObjectName("section")
-        layout.addWidget(self.emergency_stop_title_label)
         self.emergency_stop_warning_label = QLabel(
             self.tr('emergency_stop_warning')
         )
         self.emergency_stop_warning_label.setWordWrap(True)
+        self.emergency_stop_warning_label.setSizePolicy(
+            QSizePolicy.Ignored,
+            QSizePolicy.Preferred,
+        )
         self.emergency_stop_warning_label.setStyleSheet(
             "color: #ffd35c; font-size: 12px;"
         )
-        layout.addWidget(self.emergency_stop_warning_label)
+        emergency_section.addWidget(self.emergency_stop_warning_label)
         emergency_stop_layout = QHBoxLayout()
+        emergency_stop_layout.setSpacing(6)
         self.emergency_stop_key_edit = QLineEdit(self.emergency_stop_key)
         self.emergency_stop_key_edit.setReadOnly(True)
         self.emergency_stop_assign_button = QPushButton(
@@ -4161,25 +4195,80 @@ class MainWindow(QMainWindow):
         )
         emergency_stop_layout.addWidget(self.emergency_stop_key_edit, 1)
         emergency_stop_layout.addWidget(self.emergency_stop_assign_button)
-        layout.addLayout(emergency_stop_layout)
+        emergency_section.addLayout(emergency_stop_layout)
 
-        layout.addStretch()
-        add_separator()
+        profile_section = add_section(
+            right_column,
+            'profiles_transfer_title',
+            'profiles_transfer_title_label',
+        )
+        self.profiles_manage_button = QPushButton(
+            self.tr('profiles_manage_button')
+        )
+        self.profiles_manage_button.setObjectName("blue")
+        self.profiles_manage_button.clicked.connect(self.manage_profiles)
+        profile_section.addWidget(self.profiles_manage_button)
+        profile_transfer_layout = QHBoxLayout()
+        profile_transfer_layout.setSpacing(6)
+        self.profiles_export_button = QPushButton(
+            self.tr('profiles_export')
+        )
+        self.profiles_export_button.clicked.connect(self.export_profiles)
+        self.profiles_import_button = QPushButton(
+            self.tr('profiles_import')
+        )
+        self.profiles_import_button.clicked.connect(self.import_profiles)
+        profile_transfer_layout.addWidget(self.profiles_export_button)
+        profile_transfer_layout.addWidget(self.profiles_import_button)
+        profile_section.addLayout(profile_transfer_layout)
+
+        updates_section = add_section(
+            right_column,
+            'settings_updates_section',
+            'settings_updates_title_label',
+        )
+        self.update_check_button = QPushButton(self.tr('update_check_button'))
+        self.update_check_button.clicked.connect(
+            lambda: self.check_for_updates(manual=True)
+        )
+        updates_section.addWidget(self.update_check_button)
+
+        feedback_section = add_section(
+            right_column,
+            'settings_bug_report_section',
+            'settings_bug_report_title_label',
+        )
+        self.bug_report_button = QPushButton(self.tr('bug_report_button'))
+        self.bug_report_button.setObjectName("blue")
+        self.bug_report_button.clicked.connect(self.open_bug_report_form)
+        feedback_section.addWidget(self.bug_report_button)
+        self.settings_bug_report_description_label = QLabel(
+            self.tr('settings_bug_report_description')
+        )
+        self.settings_bug_report_description_label.setWordWrap(True)
+        self.settings_bug_report_description_label.setSizePolicy(
+            QSizePolicy.Ignored,
+            QSizePolicy.Preferred,
+        )
+        self.settings_bug_report_description_label.setStyleSheet(
+            "color: #91a4ba; font-size: 12px;"
+        )
+        feedback_section.addWidget(self.settings_bug_report_description_label)
+
+        left_column.addStretch(1)
+        right_column.addStretch(1)
 
         self.settings_developer_label = QLabel(self.tr('settings_developer'))
-        layout.addWidget(self.settings_developer_label)
         self.settings_developer_discord_label = QLabel(
             self.tr('settings_developer_discord')
         )
         self.settings_developer_discord_label.setTextInteractionFlags(
             Qt.TextSelectableByMouse
         )
-        layout.addWidget(self.settings_developer_discord_label)
         self.settings_version_label = QLabel(
             self.tr('settings_version').format(APP_VERSION)
         )
         self.settings_version_label.setStyleSheet("color: #91a4ba;")
-        layout.addWidget(self.settings_version_label)
 
         buttons = QDialogButtonBox()
         self.settings_close_button = buttons.addButton(
@@ -4187,8 +4276,25 @@ class MainWindow(QMainWindow):
             QDialogButtonBox.RejectRole,
         )
         self.settings_close_button.clicked.connect(self.settings_dialog.reject)
-        layout.addWidget(buttons)
-        self.settings_dialog.setMinimumHeight(520)
+        footer_layout = QHBoxLayout()
+        footer_layout.setSpacing(8)
+        developer_info = QVBoxLayout()
+        developer_info.setSpacing(0)
+        developer_info.addWidget(self.settings_developer_label)
+        developer_info.addWidget(self.settings_developer_discord_label)
+        developer_info.addWidget(self.settings_version_label)
+        footer_layout.addLayout(developer_info, 1)
+        footer_layout.addWidget(buttons)
+        layout.addLayout(footer_layout)
+        self.settings_dialog.setMinimumHeight(360)
+        self.settings_dialog.resize(600, 360)
+        self.settings_dialog.setStyleSheet(
+            """
+            QDialog QPushButton { padding: 6px 10px; }
+            QDialog QLineEdit, QDialog QComboBox { padding: 5px 8px; }
+            QDialog QLabel#section { padding-top: 1px; }
+            """
+        )
         self.apply_theme()
 
     def create_settings_panel(self):
@@ -5144,8 +5250,13 @@ class MainWindow(QMainWindow):
                 is_coordinate_mode = (
                     self.current_mode == self.MODE_COORDINATES
                 )
+                coordinate_smooth_enabled = (
+                    is_coordinate_mode
+                    and self.coordinate_smooth_checkbox.isChecked()
+                )
                 random_click_interval = (
                     self.coordinate_random_click_interval_checkbox.isChecked()
+                    and not coordinate_smooth_enabled
                     if is_coordinate_mode
                     else self.random_interval.isChecked()
                 )
@@ -5181,7 +5292,7 @@ class MainWindow(QMainWindow):
                         self.resolve_coordinate_points(self.coordinate_points)
                     )
                     self.coordinate_smooth_enabled = (
-                        self.coordinate_smooth_checkbox.isChecked()
+                        coordinate_smooth_enabled
                     )
                     self.coordinate_move_duration = self._interval_value(
                         self.coordinate_move_duration_min_edit
@@ -5224,7 +5335,13 @@ class MainWindow(QMainWindow):
                     ):
                         raise ValueError
                     if (
-                        self.coordinate_random_move_duration
+                        (
+                            self.coordinate_smooth_enabled
+                            or has_coordinate_swipe(
+                                self.coordinate_click_positions
+                            )
+                        )
+                        and self.coordinate_random_move_duration
                         and self.coordinate_move_duration
                         > self.coordinate_move_duration_max
                     ):
@@ -5395,10 +5512,12 @@ class MainWindow(QMainWindow):
         if points is not None:
             self.coordinate_points = points
             self._refresh_coordinate_points_label()
+            self.update_coordinate_move_ui()
 
     def clear_coordinate_points(self):
         self.coordinate_points.clear()
         self._refresh_coordinate_points_label()
+        self.update_coordinate_move_ui()
 
     def _refresh_coordinate_points_label(self):
         self.coordinate_points_label.setText(
@@ -6061,6 +6180,7 @@ class MainWindow(QMainWindow):
         self.coordinate_random_move_duration_checkbox.setChecked(
             profile.get("coordinate_random_move_duration", False)
         )
+        self.update_coordinate_move_ui()
         profile_move_duration = max(
             0.0,
             float(profile.get("coordinate_move_duration", 0.3)),

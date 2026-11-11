@@ -1,5 +1,5 @@
 #define MyAppName "Lim0n4ikzGames Clicker"
-#define MyAppVersion "2.11.7"
+#define MyAppVersion "2.12.9"
 #define MyAppPublisher "Lim0n4ikzGames"
 #define MyAppExeName "Lim0n4ikzGamesClicker.exe"
 

@@ -481,17 +481,38 @@
         }
 
         .warning {
-            margin-top: 10px;
-            margin-bottom: 30px;
-            padding: 12px 16px;
-            background: rgba(250, 204, 21, 0.04);
-            border: 1px solid rgba(250, 204, 21, 0.08);
-            border-radius: 14px;
-            color: #9d936c;
-            font-size: 0.78rem;
-            line-height: 1.5;
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            margin: -4px 0 24px;
+            padding: 16px 18px;
+            background: linear-gradient(
+                110deg,
+                rgba(250, 204, 21, 0.16),
+                rgba(250, 204, 21, 0.07)
+            );
+            border: 1px solid rgba(250, 204, 21, 0.38);
+            border-left: 4px solid #facc15;
+            border-radius: 12px;
+            color: #f5e7b0;
+            font-size: 0.9rem;
+            line-height: 1.6;
             position: relative;
             z-index: 2;
+        }
+
+        .warning-icon {
+            flex: 0 0 auto;
+            font-size: 1.35rem;
+            line-height: 1.4;
+        }
+
+        .warning-title {
+            display: block;
+            margin-bottom: 3px;
+            color: #ffe16b;
+            font-size: 0.95rem;
+            font-weight: 700;
         }
 
         .lang-ru, .lang-en {
@@ -607,32 +628,46 @@
 
     <div class="lang-ru active fade-in delay-2">
         <div class="description">
-            <strong>Lim0n4ikzGames Clicker</strong> — лёгкий инструмент для автоматизации
-            повторяющихся действий с клавиатурой и мышью. Настраивайте нажатия,
-            интервалы и комбинации под свои задачи.
+            <strong>Lim0n4ikzGames Clicker</strong> — приложение для автоматизации
+            повторяющихся действий с клавиатурой и мышью. Выберите один из пяти
+            режимов, настройте интервалы и горячие клавиши, а нужную конфигурацию
+            сохраните в профиль. Приложение показывает количество действий и
+            скорость нажатий, поддерживает координатные клики и свайпы.
         </div>
     </div>
 
     <div class="lang-en fade-in delay-2">
         <div class="description">
-            <strong>Lim0n4ikzGames Clicker</strong> is a lightweight tool for automating
-            repetitive keyboard and mouse actions. Configure presses, intervals and
-            combinations for your own workflows.
+            <strong>Lim0n4ikzGames Clicker</strong> automates repetitive keyboard and
+            mouse actions. Choose from five modes, configure intervals and hotkeys,
+            and save the setup you need as a profile. Track action counts and click
+            speed, or record coordinate clicks and swipes.
         </div>
     </div>
 
     <div class="meta fade-in delay-3">
         <span>🖥️ Windows 7 / 8 / 10 / 11</span>
-        <span>⚡ 4 режима</span>
+        <span>⚡ <span class="lang-ru active">5 режимов</span><span class="lang-en">5 modes</span></span>
         <span>⌨️ Keyboard + Mouse</span>
-        
+        <span>🏷️ <span class="lang-ru active">Версия 2.12.9</span><span class="lang-en">Version 2.12.9</span></span>
     </div>
+
+    <aside class="warning fade-in delay-4" aria-label="Usage notice">
+        <span class="warning-icon" aria-hidden="true">⚠️</span>
+        <div>
+            <strong class="warning-title lang-ru active">Важно</strong>
+            <strong class="warning-title lang-en">Important</strong>
+            <span class="lang-ru active">Использование средств автоматизации может регулироваться правилами конкретной игры или сервера. Перед использованием ознакомьтесь с актуальными правилами.</span>
+            <span class="lang-en">Automation tools may be restricted by the rules of a particular game or server. Check the current rules before using the application.</span>
+        </div>
+    </aside>
+
         <div class="download fade-in delay-6" id="download">
         <h3 class="lang-ru active">Скачать Lim0n4ikzGames Clicker</h3>
         <h3 class="lang-en">Download Lim0n4ikzGames Clicker</h3>
 
-        <p class="lang-ru active">Готовая версия для Windows.</p>
-        <p class="lang-en">Ready-to-use Windows build.</p>
+        <p class="lang-ru active">Установщик для Windows. Настройки и профили сохраняются между запусками.</p>
+        <p class="lang-en">Windows installer. Your settings and profiles are saved between launches.</p>
 
         <a class="button" href="https://github.com/lim0n4ikz/Lim0n4ikzGamesClicker/releases/latest/download/Lim0n4ikzGamesClickerSetup.exe">
             ⬇ <span class="lang-ru active">Скачать последнюю версию</span>
@@ -686,6 +721,15 @@
             <p class="lang-en">Press multiple keys simultaneously, such as Ctrl+Shift+W.</p>
             <code>Ctrl + Shift + W</code>
         </div>
+
+        <div class="mode-item">
+            <span class="icon">📍</span>
+            <h3 class="lang-ru active">Координатные действия</h3>
+            <h3 class="lang-en">Coordinate actions</h3>
+            <p class="lang-ru active">Записывайте точки кликов и свайпы через Shift+перетаскивание. Настройте плавность и интервалы между циклами.</p>
+            <p class="lang-en">Record click points and swipes with Shift+drag. Configure smooth movement and intervals between cycles.</p>
+            <code>Click → swipe → repeat</code>
+        </div>
     </div>
 
     <div class="section-title fade-in delay-4">
@@ -697,26 +741,26 @@
     <div class="features-grid fade-in delay-5">
         <div class="feature-item">
             <span class="icon">🖱️</span>
-            <h3 class="lang-ru active">Мышь</h3>
-            <h3 class="lang-en">Mouse</h3>
-            <p class="lang-ru active">ЛКМ, ПКМ, СКМ, X1 и X2.</p>
-            <p class="lang-en">Left, right, middle, X1 and X2 buttons.</p>
+            <h3 class="lang-ru active">Клавиатура и мышь</h3>
+            <h3 class="lang-en">Keyboard and mouse</h3>
+            <p class="lang-ru active">Используйте клавиши, комбинации и кнопки мыши: ЛКМ, ПКМ, СКМ, X1 и X2.</p>
+            <p class="lang-en">Use keyboard keys, combinations, and left, right, middle, X1 or X2 mouse buttons.</p>
         </div>
 
         <div class="feature-item">
             <span class="icon">🎲</span>
             <h3 class="lang-ru active">Случайные интервалы</h3>
             <h3 class="lang-en">Random intervals</h3>
-            <p class="lang-ru active">Минимальный и максимальный интервал для каждого цикла.</p>
-            <p class="lang-en">Set minimum and maximum timing for each cycle.</p>
+            <p class="lang-ru active">Задавайте диапазон между нажатиями и отдельно — между циклами координатных действий.</p>
+            <p class="lang-en">Set a range between presses and a separate interval between coordinate-action cycles.</p>
         </div>
 
         <div class="feature-item">
             <span class="icon">🔥</span>
             <h3 class="lang-ru active">Горячие клавиши</h3>
             <h3 class="lang-en">Hotkeys</h3>
-            <p class="lang-ru active">Запуск и остановка автоматизации с клавиатуры.</p>
-            <p class="lang-en">Start and stop automation using global hotkeys.</p>
+            <p class="lang-ru active">Назначайте сочетания для запуска и остановки. Аварийная клавиша остановки доступна всегда.</p>
+            <p class="lang-en">Assign start and stop shortcuts. The emergency stop key remains available at all times.</p>
         </div>
 
         <div class="feature-item">
@@ -726,11 +770,68 @@
             <p class="lang-ru active">Русский и английский интерфейс.</p>
             <p class="lang-en">Russian and English interface.</p>
         </div>
+
+        <div class="feature-item">
+            <span class="icon">🗂️</span>
+            <h3 class="lang-ru active">Профили</h3>
+            <h3 class="lang-en">Profiles</h3>
+            <p class="lang-ru active">Сохраняйте отдельные наборы настроек, быстро переключайтесь между ними, ищите, импортируйте и экспортируйте профили.</p>
+            <p class="lang-en">Save separate setups, switch between them, search, import, and export profiles.</p>
+        </div>
+
+        <div class="feature-item">
+            <span class="icon">📊</span>
+            <h3 class="lang-ru active">Счётчик и КПС</h3>
+            <h3 class="lang-en">Action counter and CPS</h3>
+            <p class="lang-ru active">Следите за количеством выполненных действий, текущей и средней скоростью кликов за запуск.</p>
+            <p class="lang-en">Track completed actions, current clicks per second, and average speed for the run.</p>
+        </div>
+
+        <div class="feature-item">
+            <span class="icon">🎯</span>
+            <h3 class="lang-ru active">Лимит действий</h3>
+            <h3 class="lang-en">Action limit</h3>
+            <p class="lang-ru active">При необходимости задайте число действий, после которого кликер остановится автоматически.</p>
+            <p class="lang-en">Optionally set an action count limit to stop the clicker automatically.</p>
+        </div>
+
+        <div class="feature-item">
+            <span class="icon">🎨</span>
+            <h3 class="lang-ru active">Темы интерфейса</h3>
+            <h3 class="lang-en">Interface themes</h3>
+            <p class="lang-ru active">Выбирайте одну из девяти цветовых тем. Язык и внешний вид сохраняются между запусками.</p>
+            <p class="lang-en">Choose from nine color themes. Your language and appearance preferences are saved.</p>
+        </div>
     </div>
 
-    <div class="warning">
-        ⚠️ <span class="lang-ru active">Использование средств автоматизации может регулироваться правилами конкретной игры или сервера. Перед использованием ознакомьтесь с актуальными правилами.</span>
-        <span class="lang-en">Automation tools may be restricted by the rules of a particular game or server. Check the current rules before using the application.</span>
+    <div class="section-title fade-in delay-5">
+        <span>🚀</span>
+        <span class="lang-ru active">Как начать</span>
+        <span class="lang-en">Getting started</span>
+    </div>
+
+    <div class="features-grid fade-in delay-6">
+        <div class="feature-item">
+            <span class="icon">1️⃣</span>
+            <h3 class="lang-ru active">Выберите режим</h3>
+            <h3 class="lang-en">Choose a mode</h3>
+            <p class="lang-ru active">Выберите подходящий режим и задайте клавишу, последовательность или координатные действия.</p>
+            <p class="lang-en">Pick a mode and set a key, sequence, or coordinate actions.</p>
+        </div>
+        <div class="feature-item">
+            <span class="icon">2️⃣</span>
+            <h3 class="lang-ru active">Настройте параметры</h3>
+            <h3 class="lang-en">Configure the options</h3>
+            <p class="lang-ru active">Задайте интервалы, горячие клавиши и при необходимости лимит действий.</p>
+            <p class="lang-en">Set intervals, hotkeys, and an optional action limit.</p>
+        </div>
+        <div class="feature-item">
+            <span class="icon">3️⃣</span>
+            <h3 class="lang-ru active">Запустите и остановите</h3>
+            <h3 class="lang-en">Start and stop</h3>
+            <p class="lang-ru active">Нажмите кнопку запуска или используйте горячую клавишу. Для немедленной остановки доступна отдельная аварийная клавиша.</p>
+            <p class="lang-en">Use the start button or hotkey. A dedicated emergency key is available to stop immediately.</p>
+        </div>
     </div>
 
     <div class="contacts-title fade-in delay-6">
