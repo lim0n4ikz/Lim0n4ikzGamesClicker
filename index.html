@@ -629,27 +629,28 @@
     <div class="lang-ru active fade-in delay-2">
         <div class="description">
             <strong>Lim0n4ikzGames Clicker</strong> — приложение для автоматизации
-            повторяющихся действий с клавиатурой и мышью. Выберите один из пяти
-            режимов, настройте интервалы и горячие клавиши, а нужную конфигурацию
-            сохраните в профиль. Приложение показывает количество действий и
-            скорость нажатий, поддерживает координатные клики и свайпы.
+            повторяющихся действий с клавиатурой и мышью. Выберите один из шести
+            режимов, настройте интервалы и горячие клавиши, а конфигурацию сохраните
+            в профиль. Приложение показывает количество действий и скорость нажатий,
+            поддерживает координатные клики и свайпы, а также запись и воспроизведение
+            сценариев.
         </div>
     </div>
 
     <div class="lang-en fade-in delay-2">
         <div class="description">
             <strong>Lim0n4ikzGames Clicker</strong> automates repetitive keyboard and
-            mouse actions. Choose from five modes, configure intervals and hotkeys,
+            mouse actions. Choose from six modes, configure intervals and hotkeys,
             and save the setup you need as a profile. Track action counts and click
-            speed, or record coordinate clicks and swipes.
+            speed, record coordinate clicks and swipes, or capture and replay scenarios.
         </div>
     </div>
 
     <div class="meta fade-in delay-3">
         <span>🖥️ Windows 7 / 8 / 10 / 11</span>
-        <span>⚡ <span class="lang-ru active">5 режимов</span><span class="lang-en">5 modes</span></span>
+        <span>⚡ <span class="lang-ru active">6 режимов</span><span class="lang-en">6 modes</span></span>
         <span>⌨️ Keyboard + Mouse</span>
-        <span>🏷️ <span class="lang-ru active">Версия 2.12.9</span><span class="lang-en">Version 2.12.9</span></span>
+        <span>🏷️ <span class="lang-ru active">Версия 2.18.10</span><span class="lang-en">Version 2.18.10</span></span>
     </div>
 
     <aside class="warning fade-in delay-4" aria-label="Usage notice">
@@ -699,8 +700,8 @@
             <span class="icon">🔒</span>
             <h3 class="lang-ru active">Зажатие клавиши</h3>
             <h3 class="lang-en">Hold key</h3>
-            <p class="lang-ru active">Удержание выбранной клавиши в течение заданного времени.</p>
-            <p class="lang-en">Hold a selected key for a configured amount of time.</p>
+            <p class="lang-ru active">Удержание выбранной клавиши или кнопки мыши в течение заданного времени.</p>
+            <p class="lang-en">Hold a selected key or mouse button for a configured amount of time.</p>
             <code>W → hold → release</code>
         </div>
 
@@ -708,8 +709,8 @@
             <span class="icon">🔄</span>
             <h3 class="lang-ru active">Последовательное нажатие</h3>
             <h3 class="lang-en">Sequential press</h3>
-            <p class="lang-ru active">Выполнение нескольких клавиш по очереди с настраиваемыми задержками.</p>
-            <p class="lang-en">Execute several keys in sequence with configurable delays.</p>
+            <p class="lang-ru active">Выполнение клавиш и кнопок мыши по очереди с настраиваемыми задержками.</p>
+            <p class="lang-en">Execute keyboard keys and mouse buttons in sequence with configurable delays.</p>
             <code>1 → 2 → 3 → F</code>
         </div>
 
@@ -729,6 +730,15 @@
             <p class="lang-ru active">Записывайте точки кликов и свайпы через Shift+перетаскивание. Настройте плавность и интервалы между циклами.</p>
             <p class="lang-en">Record click points and swipes with Shift+drag. Configure smooth movement and intervals between cycles.</p>
             <code>Click → swipe → repeat</code>
+        </div>
+
+        <div class="mode-item">
+            <span class="icon">🎬</span>
+            <h3 class="lang-ru active">Записанный сценарий</h3>
+            <h3 class="lang-en">Recorded scenario</h3>
+            <p class="lang-ru active">Записывайте клавиши, действия мыши, прокрутку и задержки. Редактируйте и сохраняйте сценарий отдельно или в профиле, затем повторяйте его с фиксированным или случайным интервалом.</p>
+            <p class="lang-en">Record keyboard and mouse actions, scrolling, and delays. Edit and save scenarios separately or in a profile, then replay them at fixed or random intervals.</p>
+            <code>Record → edit → repeat</code>
         </div>
     </div>
 
@@ -751,8 +761,8 @@
             <span class="icon">🎲</span>
             <h3 class="lang-ru active">Случайные интервалы</h3>
             <h3 class="lang-en">Random intervals</h3>
-            <p class="lang-ru active">Задавайте диапазон между нажатиями и отдельно — между циклами координатных действий.</p>
-            <p class="lang-en">Set a range between presses and a separate interval between coordinate-action cycles.</p>
+            <p class="lang-ru active">Задавайте случайный диапазон между нажатиями и повторами сценариев, а интервалы циклов координатных действий настраивайте отдельно.</p>
+            <p class="lang-en">Set random delays between presses or scenario runs, and configure coordinate-cycle intervals separately.</p>
         </div>
 
         <div class="feature-item">
@@ -789,10 +799,10 @@
 
         <div class="feature-item">
             <span class="icon">🎯</span>
-            <h3 class="lang-ru active">Лимит действий</h3>
-            <h3 class="lang-en">Action limit</h3>
-            <p class="lang-ru active">При необходимости задайте число действий, после которого кликер остановится автоматически.</p>
-            <p class="lang-en">Optionally set an action count limit to stop the clicker automatically.</p>
+            <h3 class="lang-ru active">Лимиты остановки</h3>
+            <h3 class="lang-en">Automatic stop limits</h3>
+            <p class="lang-ru active">Задайте лимит действий или времени для любого режима. Для сценариев можно ограничить число полных выполнений.</p>
+            <p class="lang-en">Set an action or time limit for any mode. Scenario runs can also be limited.</p>
         </div>
 
         <div class="feature-item">
@@ -815,15 +825,15 @@
             <span class="icon">1️⃣</span>
             <h3 class="lang-ru active">Выберите режим</h3>
             <h3 class="lang-en">Choose a mode</h3>
-            <p class="lang-ru active">Выберите подходящий режим и задайте клавишу, последовательность или координатные действия.</p>
-            <p class="lang-en">Pick a mode and set a key, sequence, or coordinate actions.</p>
+            <p class="lang-ru active">Выберите режим и задайте клавишу, последовательность, координатные действия или сценарий.</p>
+            <p class="lang-en">Choose a mode and set a key, sequence, coordinate actions, or a scenario.</p>
         </div>
         <div class="feature-item">
             <span class="icon">2️⃣</span>
             <h3 class="lang-ru active">Настройте параметры</h3>
             <h3 class="lang-en">Configure the options</h3>
-            <p class="lang-ru active">Задайте интервалы, горячие клавиши и при необходимости лимит действий.</p>
-            <p class="lang-en">Set intervals, hotkeys, and an optional action limit.</p>
+            <p class="lang-ru active">Настройте интервалы, горячие клавиши и при необходимости лимит действий, времени или выполнений сценария.</p>
+            <p class="lang-en">Configure intervals and hotkeys, plus an optional action, time, or scenario-run limit.</p>
         </div>
         <div class="feature-item">
             <span class="icon">3️⃣</span>
