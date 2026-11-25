@@ -6,4 +6,5 @@ dist/
 installer/
 settings.json
 profiles.json
+scenario.json
 /не переносить/

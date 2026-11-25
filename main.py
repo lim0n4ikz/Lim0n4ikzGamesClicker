@@ -16,7 +16,7 @@ from collections import deque
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
-from PySide6.QtCore import Qt, QEvent, QTimer, QThread, Signal, Slot, QLocale, QUrl, QObject
+from PySide6.QtCore import Qt, QEvent, QTimer, QThread, Signal, Slot, QLocale, QUrl, QObject, QPoint
 from PySide6.QtGui import (
     QFont, QAction, QCursor, QIcon, QDoubleValidator, QIntValidator,
     QDesktopServices, QColor, QPalette,
@@ -29,9 +29,13 @@ from PySide6.QtWidgets import (
     QTextEdit, QFrame, QCheckBox, QMessageBox, QRadioButton,
     QMenu, QDialog, QDialogButtonBox, QFormLayout, QSizePolicy, QScrollArea,
     QTextBrowser, QFileDialog, QStyle, QStyleOptionButton, QGroupBox,
+    QListWidget, QWizard, QWizardPage,
 )
 
 from pynput import keyboard, mouse
+
+
+MAX_SCENARIO_ACTIONS = 100000
 
 
 class CoordinateScreenUnavailable(ValueError):
@@ -485,7 +489,7 @@ if sys.platform == "win32":
 # ============================================================
 
 APP_NAME = "Lim0n4ikzGames Clicker"
-APP_VERSION = "2.12.9"
+APP_VERSION = "2.18.10"
 BUG_REPORT_URL = "https://forms.gle/MZvS2rtF4Sae8eAV6"
 PROFILE_FILE_FORMAT = "lim0n4ikz-clicker-profiles"
 MAX_PROFILE_FILE_SIZE = 5 * 1024 * 1024
@@ -512,6 +516,7 @@ else:
     DATA_DIR = APP_DIR
     SETTINGS_FILE = LEGACY_SETTINGS_FILE
     PROFILES_FILE = APP_DIR / "profiles.json"
+SCENARIO_FILE = DATA_DIR / "scenario.json"
 LEGACY_PROFILES_FILE = APP_DIR / "profiles.json"
 ICON_FILE = RESOURCE_DIR / "lim0n4ikzgames.ico"
 FALLBACK_ICON_FILE = RESOURCE_DIR / "lim0n4ikzgames.ico"
@@ -648,6 +653,9 @@ if sys.platform == "win32":
 STYLE = """
 QMainWindow { background: #060d16; }
 QDialog { background: #060d16; }
+QWizard { background: #060d16; }
+QWizardPage { background-color: #060d16; color: #eef5ff; }
+QWizardPage QLabel { background: transparent; color: #eef5ff; }
 QWidget { color: #eef5ff; font-family: "Segoe UI"; font-size: 13px; }
 QFrame#panel { background: #0b1725; border: 1px solid #223952; border-radius: 14px; }
 QLabel#title { font-size: 23px; font-weight: 700; }
@@ -801,6 +809,699 @@ def theme_local_stylesheet(stylesheet, theme):
         stylesheet,
     )
 
+class ScenarioActionEditDialog(QDialog):
+    ACTIONS = (
+        ("key_press", "scenario_type_key_press"),
+        ("key_release", "scenario_type_key_release"),
+        ("mouse_press", "scenario_type_mouse_press"),
+        ("mouse_release", "scenario_type_mouse_release"),
+        ("mouse_move", "scenario_type_mouse_move"),
+        ("scroll", "scenario_type_scroll"),
+    )
+
+    def __init__(self, action, parent):
+        super().__init__(parent)
+        self.editor = parent
+        self.main_window = (
+            parent if hasattr(parent, "MODE_SCENARIO") else parent.parent
+        )
+        self.action = deepcopy(action)
+        self.setWindowTitle(self.main_window.tr("scenario_action_title"))
+        layout = QFormLayout(self)
+
+        self.type_combo = QComboBox()
+        for action_type, translation_key in self.ACTIONS:
+            self.type_combo.addItem(
+                self.main_window.tr(translation_key),
+                action_type,
+            )
+        current_type = self.action.get("type", "key_press")
+        index = self.type_combo.findData(current_type)
+        self.type_combo.setCurrentIndex(max(0, index))
+        layout.addRow(
+            self.main_window.tr("scenario_action_type"),
+            self.type_combo,
+        )
+
+        self.value_label = QLabel()
+        self.value_edit = QLineEdit()
+        layout.addRow(self.value_label, self.value_edit)
+
+        self.x_label = QLabel(self.main_window.tr("scenario_action_x"))
+        self.x_edit = QLineEdit()
+        self.x_edit.setValidator(QIntValidator(-100000, 100000, self.x_edit))
+        layout.addRow(self.x_label, self.x_edit)
+        self.y_label = QLabel(self.main_window.tr("scenario_action_y"))
+        self.y_edit = QLineEdit()
+        self.y_edit.setValidator(QIntValidator(-100000, 100000, self.y_edit))
+        layout.addRow(self.y_label, self.y_edit)
+
+        self.dx_label = QLabel(self.main_window.tr("scenario_action_dx"))
+        self.dx_edit = QLineEdit()
+        self.dx_edit.setValidator(QIntValidator(-10000, 10000, self.dx_edit))
+        layout.addRow(self.dx_label, self.dx_edit)
+        self.dy_label = QLabel(self.main_window.tr("scenario_action_dy"))
+        self.dy_edit = QLineEdit()
+        self.dy_edit.setValidator(QIntValidator(-10000, 10000, self.dy_edit))
+        layout.addRow(self.dy_label, self.dy_edit)
+
+        self.delay_edit = QLineEdit(
+            format_interval_value(self.action.get("delay", 0.0))
+        )
+        self.delay_edit.setValidator(IntervalValidator(self.delay_edit))
+        layout.addRow(
+            self.main_window.tr("scenario_action_delay"),
+            self.delay_edit,
+        )
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addRow(buttons)
+        self.type_combo.currentIndexChanged.connect(self.update_field_visibility)
+        self._load_action()
+        self.update_field_visibility()
+
+    def _load_action(self):
+        action_type = self.type_combo.currentData()
+        if action_type in ("key_press", "key_release"):
+            self.value_edit.setText(self.action.get("key", ""))
+        elif action_type in ("mouse_press", "mouse_release"):
+            self.value_edit.setText(self.action.get("button", "LMB"))
+        self.x_edit.setText(str(self.action.get("x", 0)))
+        self.y_edit.setText(str(self.action.get("y", 0)))
+        self.dx_edit.setText(str(self.action.get("dx", 0)))
+        self.dy_edit.setText(str(self.action.get("dy", 0)))
+
+    def update_field_visibility(self):
+        action_type = self.type_combo.currentData()
+        has_value = action_type in (
+            "key_press",
+            "key_release",
+            "mouse_press",
+            "mouse_release",
+        )
+        has_position = action_type in (
+            "mouse_press",
+            "mouse_release",
+            "mouse_move",
+            "scroll",
+        )
+        has_scroll = action_type == "scroll"
+        self.value_label.setText(
+            self.main_window.tr(
+                "scenario_action_button"
+                if action_type in ("mouse_press", "mouse_release")
+                else "scenario_action_key"
+            )
+        )
+        self.value_label.setVisible(has_value)
+        self.value_edit.setVisible(has_value)
+        self.x_label.setVisible(has_position)
+        self.x_edit.setVisible(has_position)
+        self.y_label.setVisible(has_position)
+        self.y_edit.setVisible(has_position)
+        self.dx_label.setVisible(has_scroll)
+        self.dx_edit.setVisible(has_scroll)
+        self.dy_label.setVisible(has_scroll)
+        self.dy_edit.setVisible(has_scroll)
+
+    def accept(self):
+        action_type = self.type_combo.currentData()
+        try:
+            delay = float(self.delay_edit.text().replace(",", "."))
+        except ValueError:
+            delay = -1
+        if not math.isfinite(delay) or delay < 0:
+            QMessageBox.warning(
+                self,
+                self.main_window.tr("error_title"),
+                self.main_window.tr("scenario_invalid_delay"),
+            )
+            return
+
+        action = {"type": action_type, "delay": delay}
+        if action_type in ("key_press", "key_release"):
+            key = self.main_window._normalize_key_name(
+                self.value_edit.text()
+            )
+            parsed = self.main_window.parse_key_token(key)
+            reserved = (
+                set(self.main_window.start_hotkey)
+                | set(self.main_window.stop_hotkey)
+                | {self.main_window.emergency_stop_key}
+            )
+            if (
+                not key
+                or parsed is None
+                or isinstance(parsed, mouse.Button)
+                or key in reserved
+            ):
+                QMessageBox.warning(
+                    self,
+                    self.main_window.tr("error_title"),
+                    self.main_window.tr("scenario_invalid_key"),
+                )
+                return
+            action["key"] = key
+        elif action_type in ("mouse_press", "mouse_release"):
+            button = self.value_edit.text().strip().upper()
+            parsed = self.main_window.parse_key_token(button)
+            reserved = (
+                set(self.main_window.start_hotkey)
+                | set(self.main_window.stop_hotkey)
+                | {self.main_window.emergency_stop_key}
+            )
+            if (
+                not isinstance(parsed, mouse.Button)
+                or self.main_window._button_to_str(parsed) in reserved
+            ):
+                QMessageBox.warning(
+                    self,
+                    self.main_window.tr("error_title"),
+                    self.main_window.tr("scenario_invalid_button"),
+                )
+                return
+            action["button"] = self.main_window._button_to_str(parsed)
+
+        if action_type in (
+            "mouse_press",
+            "mouse_release",
+            "mouse_move",
+            "scroll",
+        ):
+            try:
+                action["x"] = int(self.x_edit.text())
+                action["y"] = int(self.y_edit.text())
+            except ValueError:
+                QMessageBox.warning(
+                    self,
+                    self.main_window.tr("error_title"),
+                    self.main_window.tr("scenario_invalid_position"),
+                )
+                return
+            if any(
+                not -100000 <= action[coordinate] <= 100000
+                for coordinate in ("x", "y")
+            ):
+                QMessageBox.warning(
+                    self,
+                    self.main_window.tr("error_title"),
+                    self.main_window.tr("scenario_invalid_position"),
+                )
+                return
+
+        if action_type == "scroll":
+            try:
+                action["dx"] = int(self.dx_edit.text())
+                action["dy"] = int(self.dy_edit.text())
+            except ValueError:
+                QMessageBox.warning(
+                    self,
+                    self.main_window.tr("error_title"),
+                    self.main_window.tr("scenario_invalid_scroll"),
+                )
+                return
+            if action["dx"] == 0 and action["dy"] == 0:
+                QMessageBox.warning(
+                    self,
+                    self.main_window.tr("error_title"),
+                    self.main_window.tr("scenario_invalid_scroll"),
+                )
+                return
+            if any(
+                not -100000 <= action[direction] <= 100000
+                for direction in ("dx", "dy")
+            ):
+                QMessageBox.warning(
+                    self,
+                    self.main_window.tr("error_title"),
+                    self.main_window.tr("scenario_invalid_scroll"),
+                )
+                return
+
+        self.action = action
+        super().accept()
+
+class ModeTutorialSelectionDialog(QDialog):
+    def __init__(self, main_window):
+        super().__init__(main_window)
+        self.main_window = main_window
+        self.selected_modes = []
+        self.setWindowTitle(main_window.tr("mode_tutorial_select_title"))
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+
+        description = QLabel(
+            main_window.tr("mode_tutorial_select_description")
+        )
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
+        for mode in main_window.available_modes():
+            button = QPushButton(main_window.tr_mode(mode))
+            button.clicked.connect(
+                lambda _checked=False, selected_mode=mode:
+                    self._select_modes([selected_mode])
+            )
+            layout.addWidget(button)
+
+        self.show_all_button = QPushButton(
+            main_window.tr("mode_tutorial_show_all")
+        )
+        self.show_all_button.setObjectName("blue")
+        self.show_all_button.clicked.connect(
+            lambda: self._select_modes(main_window.available_modes())
+        )
+        layout.addWidget(self.show_all_button)
+
+        cancel_button = QPushButton(main_window.tr("dialog_cancel"))
+        cancel_button.clicked.connect(self.reject)
+        layout.addWidget(cancel_button)
+        self.setMinimumWidth(360)
+
+    def _select_modes(self, modes):
+        self.selected_modes = list(modes)
+        self.accept()
+
+
+class ModeTutorialWizard(QWizard):
+    def __init__(self, main_window, modes):
+        super().__init__(
+            main_window,
+            Qt.Tool | Qt.WindowStaysOnTopHint,
+        )
+        self.main_window = main_window
+        self.modes = list(modes)
+        self.page_targets = []
+        self.setWizardStyle(QWizard.ClassicStyle)
+        self.setModal(False)
+
+        theme_colors = THEME_COLOR_MAPS.get(main_window.theme, {})
+        background_color = theme_colors.get("#060d16", "#060d16")
+        text_color = theme_colors.get("#eef5ff", "#eef5ff")
+        palette = self.palette()
+        palette.setColor(QPalette.Window, QColor(background_color))
+        palette.setColor(QPalette.Base, QColor(background_color))
+        palette.setColor(QPalette.WindowText, QColor(text_color))
+        palette.setColor(QPalette.Text, QColor(text_color))
+        self.setPalette(palette)
+        self.setAutoFillBackground(True)
+        self.setWindowTitle(main_window.tr("mode_tutorial_title"))
+        self.setButtonText(QWizard.BackButton, main_window.tr("tutorial_back"))
+        self.setButtonText(QWizard.NextButton, main_window.tr("tutorial_next"))
+        self.setButtonText(
+            QWizard.FinishButton,
+            main_window.tr("dialog_close"),
+        )
+        self.setButtonText(
+            QWizard.CancelButton,
+            main_window.tr("dialog_close"),
+        )
+
+        for mode in self.modes:
+            for title_key, body, targets in self._steps_for_mode(mode):
+                page = QWizardPage()
+                page_palette = page.palette()
+                page_palette.setColor(
+                    QPalette.Window,
+                    QColor(background_color),
+                )
+                page_palette.setColor(
+                    QPalette.Base,
+                    QColor(background_color),
+                )
+                page_palette.setColor(
+                    QPalette.WindowText,
+                    QColor(text_color),
+                )
+                page_palette.setColor(QPalette.Text, QColor(text_color))
+                page.setPalette(page_palette)
+                page.setAttribute(Qt.WA_StyledBackground, True)
+                page.setStyleSheet(
+                    f"background-color: {background_color}; "
+                    f"color: {text_color};"
+                )
+                page.setTitle(
+                    f"{main_window.tr_mode(mode)} — "
+                    f"{main_window.tr(title_key)}"
+                )
+                label = QLabel(body)
+                label.setWordWrap(True)
+                label.setStyleSheet(
+                    f"background-color: {background_color}; "
+                    f"color: {text_color};"
+                )
+                page_layout = QVBoxLayout(page)
+                page_layout.addWidget(label)
+                self.addPage(page)
+                self.page_targets.append((mode, targets))
+
+        self.currentIdChanged.connect(self._highlight_current_step)
+        self.finished.connect(
+            lambda _result: main_window.clear_mode_tutorial_highlights()
+        )
+        self.resize(520, 360)
+        self._position_next_to_main_window()
+        self._highlight_current_step(self.currentId())
+
+    def _steps_for_mode(self, mode):
+        main_window = self.main_window
+        mode_keys = {
+            main_window.MODE_INSTANT: "instant",
+            main_window.MODE_HOLD: "hold",
+            main_window.MODE_COMBO: "combo",
+            main_window.MODE_SEQUENCE: "sequence",
+            main_window.MODE_COORDINATES: "coordinates",
+            main_window.MODE_SCENARIO: "scenario",
+        }
+        mode_key = mode_keys[mode]
+        mode_targets = {
+            main_window.MODE_INSTANT: [
+                main_window.hotkey_edit,
+                main_window.assign_btn,
+            ],
+            main_window.MODE_HOLD: [
+                main_window.hotkey_edit,
+                main_window.assign_btn,
+            ],
+            main_window.MODE_COMBO: [
+                main_window.sequence_edit,
+                main_window.sequence_assign_btn,
+                main_window.sequence_clear_btn,
+            ],
+            main_window.MODE_SEQUENCE: [
+                main_window.sequence_edit,
+                main_window.sequence_assign_btn,
+                main_window.sequence_clear_btn,
+            ],
+            main_window.MODE_COORDINATES: [
+                main_window.coordinate_record_button,
+                main_window.coordinate_clear_button,
+            ],
+            main_window.MODE_SCENARIO: [
+                main_window.main_scenario_record_button,
+                main_window.main_scenario_edit_button,
+            ],
+        }
+        timing_targets = {
+            main_window.MODE_INSTANT: [
+                main_window.min_interval_edit,
+                main_window.max_interval_edit,
+                main_window.random_interval,
+            ],
+            main_window.MODE_HOLD: [
+                main_window.hold_time_edit,
+                main_window.between_edit,
+            ],
+            main_window.MODE_COMBO: [
+                main_window.min_interval_edit,
+                main_window.max_interval_edit,
+                main_window.random_interval,
+            ],
+            main_window.MODE_SEQUENCE: [
+                main_window.between_edit,
+                main_window.min_interval_edit,
+                main_window.max_interval_edit,
+                main_window.random_interval,
+            ],
+            main_window.MODE_COORDINATES: [
+                main_window.coordinate_movement_group,
+                main_window.coordinate_smooth_checkbox,
+                main_window.coordinate_random_move_duration_checkbox,
+                main_window.coordinate_move_duration_edit,
+                main_window.coordinate_move_duration_min_edit,
+                main_window.coordinate_move_duration_max_edit,
+                main_window.coordinate_random_click_interval_checkbox,
+                main_window.coordinate_cycle_interval_edit,
+                main_window.coordinate_cycle_interval_max_edit,
+                main_window.random_interval,
+            ],
+            main_window.MODE_SCENARIO: [
+                main_window.main_scenario_summary,
+                main_window.main_scenario_edit_button,
+            ],
+        }
+        timing_targets[main_window.MODE_HOLD].append(
+            main_window.random_interval
+        )
+        timing_targets[main_window.MODE_HOLD].extend(
+            [
+                main_window.min_interval_edit,
+                main_window.max_interval_edit,
+            ]
+        )
+        if mode == main_window.MODE_SCENARIO:
+            limit_body = (
+                main_window.tr("mode_tutorial_body_limits")
+                + "\n\n"
+                + main_window.tr("mode_tutorial_body_scenario_limit")
+            )
+            limit_targets = [
+                main_window.duration_limit_checkbox,
+                main_window.duration_limit_edit,
+                main_window.scenario_run_limit_checkbox,
+                main_window.scenario_run_limit_edit,
+            ]
+        else:
+            limit_body = (
+                main_window.tr("mode_tutorial_body_limits")
+                + "\n\n"
+                + main_window.tr("mode_tutorial_body_click_limit")
+            )
+            limit_targets = [
+                main_window.duration_limit_checkbox,
+                main_window.duration_limit_edit,
+                main_window.click_limit_checkbox,
+                main_window.click_limit_edit,
+            ]
+        return (
+            (
+                "mode_tutorial_step_choose",
+                main_window.tr("mode_tutorial_body_choose").format(
+                    main_window.tr_mode(mode)
+                ),
+                [main_window.mode],
+            ),
+            (
+                "mode_tutorial_step_controls",
+                main_window.tr(f"mode_tutorial_controls_{mode_key}"),
+                mode_targets[mode],
+            ),
+            (
+                "mode_tutorial_step_timing",
+                main_window.tr(f"mode_tutorial_timing_{mode_key}"),
+                timing_targets[mode],
+            ),
+            (
+                "mode_tutorial_step_limits",
+                limit_body,
+                limit_targets,
+            ),
+            (
+                "mode_tutorial_step_hotkeys",
+                main_window.tr("mode_tutorial_body_hotkeys"),
+                [
+                    main_window.hk_start_edit,
+                    main_window.assign_hk_start,
+                    main_window.hk_stop_edit,
+                    main_window.assign_hk_stop,
+                    main_window.enable_hk_btn,
+                    main_window.disable_hk_btn,
+                ],
+            ),
+            (
+                "mode_tutorial_step_run",
+                main_window.tr("mode_tutorial_body_run"),
+                [
+                    main_window.start_btn,
+                    main_window.stop_btn,
+                    main_window.profiles_title_label,
+                    main_window.add_profile_btn,
+                ],
+            ),
+        )
+
+    def _position_next_to_main_window(self):
+        screen = self.main_window.screen()
+        if screen is None:
+            return
+        available = screen.availableGeometry()
+        main_rect = self.main_window.frameGeometry()
+        x = main_rect.right() + 12
+        if x + self.width() > available.right():
+            x = main_rect.left() - self.width() - 12
+        if x < available.left():
+            x = available.right() - self.width()
+        y = min(
+            max(main_rect.top(), available.top()),
+            available.bottom() - self.height(),
+        )
+        self.move(x, y)
+
+    def _highlight_current_step(self, page_id):
+        if 0 <= page_id < len(self.page_targets):
+            mode, targets = self.page_targets[page_id]
+            self.main_window.mode.setCurrentIndex(
+                self.main_window.available_modes().index(mode)
+            )
+            self.main_window.highlight_mode_tutorial_targets(targets)
+
+    def closeEvent(self, event):
+        self.main_window.clear_mode_tutorial_highlights()
+        super().closeEvent(event)
+
+
+class ScenarioEditorDialog(QDialog):
+    def __init__(self, actions, parent):
+        super().__init__(parent)
+        self.parent_editor = parent
+        self.main_window = (
+            parent if hasattr(parent, "MODE_SCENARIO") else parent.parent
+        )
+        self.actions = deepcopy(actions)
+        self.setWindowTitle(self.main_window.tr("scenario_editor_title"))
+        self.resize(620, 480)
+
+        layout = QVBoxLayout(self)
+        self.actions_list = QListWidget()
+        layout.addWidget(self.actions_list)
+
+        buttons = QHBoxLayout()
+        self.add_button = QPushButton(
+            self.main_window.tr("scenario_action_add")
+        )
+        self.edit_button = QPushButton(
+            self.main_window.tr("scenario_action_edit")
+        )
+        self.delete_button = QPushButton(
+            self.main_window.tr("scenario_action_delete")
+        )
+        self.up_button = QPushButton(
+            self.main_window.tr("scenario_action_up")
+        )
+        self.down_button = QPushButton(
+            self.main_window.tr("scenario_action_down")
+        )
+        for button in (
+            self.add_button,
+            self.edit_button,
+            self.delete_button,
+            self.up_button,
+            self.down_button,
+        ):
+            buttons.addWidget(button)
+        layout.addLayout(buttons)
+
+        dialog_buttons = QDialogButtonBox(
+            QDialogButtonBox.Save | QDialogButtonBox.Cancel
+        )
+        dialog_buttons.accepted.connect(self.accept)
+        dialog_buttons.rejected.connect(self.reject)
+        layout.addWidget(dialog_buttons)
+        dialog_buttons.button(QDialogButtonBox.Save).setText(
+            self.main_window.tr("scenario_editor_save_button")
+        )
+        dialog_buttons.button(QDialogButtonBox.Cancel).setText(
+            self.main_window.tr("dialog_cancel")
+        )
+
+        self.add_button.clicked.connect(self.add_action)
+        self.edit_button.clicked.connect(self.edit_action)
+        self.delete_button.clicked.connect(self.delete_action)
+        self.up_button.clicked.connect(lambda: self.move_action(-1))
+        self.down_button.clicked.connect(lambda: self.move_action(1))
+        self.actions_list.currentRowChanged.connect(self.update_buttons)
+        self.refresh_actions()
+
+    def action_summary(self, action):
+        translate = self.main_window.tr
+        action_type = action["type"]
+        type_names = dict(ScenarioActionEditDialog.ACTIONS)
+        summary = translate(type_names[action_type])
+        if "key" in action:
+            summary += f": {action['key']}"
+        elif "button" in action:
+            summary += f": {action['button']}"
+        elif action_type == "mouse_move":
+            summary += f": {action['x']}, {action['y']}"
+        elif action_type == "scroll":
+            summary += (
+                f": {action['dx']}, {action['dy']} "
+                f"({action['x']}, {action['y']})"
+            )
+        summary += f" · {format_interval_value(action['delay'])} s"
+        return summary
+
+    def refresh_actions(self, row=0):
+        self.actions_list.clear()
+        for action in self.actions:
+            self.actions_list.addItem(self.action_summary(action))
+        if self.actions:
+            self.actions_list.setCurrentRow(
+                min(max(row, 0), len(self.actions) - 1)
+            )
+        self.update_buttons()
+
+    def update_buttons(self):
+        row = self.actions_list.currentRow()
+        selected = 0 <= row < len(self.actions)
+        self.edit_button.setEnabled(selected)
+        self.delete_button.setEnabled(selected)
+        self.up_button.setEnabled(selected and row > 0)
+        self.down_button.setEnabled(selected and row < len(self.actions) - 1)
+
+    def add_action(self):
+        if len(self.actions) >= MAX_SCENARIO_ACTIONS:
+            QMessageBox.warning(
+                self,
+                self.main_window.tr("error_title"),
+                self.main_window.tr("scenario_action_limit"),
+            )
+            return
+        dialog = ScenarioActionEditDialog(
+            {"type": "key_press", "key": "A", "delay": 0.0},
+            self.parent_editor,
+        )
+        if dialog.exec() == QDialog.Accepted:
+            row = self.actions_list.currentRow() + 1
+            self.actions.insert(row, dialog.action)
+            self.refresh_actions(row)
+
+    def edit_action(self):
+        row = self.actions_list.currentRow()
+        if not 0 <= row < len(self.actions):
+            return
+        dialog = ScenarioActionEditDialog(
+            self.actions[row],
+            self.parent_editor,
+        )
+        if dialog.exec() == QDialog.Accepted:
+            self.actions[row] = dialog.action
+            self.refresh_actions(row)
+
+    def delete_action(self):
+        row = self.actions_list.currentRow()
+        if 0 <= row < len(self.actions):
+            self.actions.pop(row)
+            self.refresh_actions(row)
+
+    def move_action(self, offset):
+        row = self.actions_list.currentRow()
+        target = row + offset
+        if 0 <= row < len(self.actions) and 0 <= target < len(self.actions):
+            self.actions[row], self.actions[target] = (
+                self.actions[target],
+                self.actions[row],
+            )
+            self.refresh_actions(target)
+
+    def accept(self):
+        super().accept()
+
+
 # ============================================================
 # DIALOG FOR EDITING PROFILE
 # ============================================================
@@ -812,6 +1513,8 @@ class ProfileEditDialog(QDialog):
         self.setModal(True)
         self.profile = profile_data.copy()
         self.binding_recording = False
+        self.scenario_actions = deepcopy(self.profile.get("scenario", []))
+        self.scenario_record_state = "idle"
 
         layout = QFormLayout(self)
 
@@ -835,6 +1538,7 @@ class ProfileEditDialog(QDialog):
             parent.tr('mode_combo'),
             parent.tr('mode_sequence'),
             parent.tr('mode_coordinates'),
+            parent.tr('mode_scenario'),
         ]
         self.mode_combo.addItems(modes)
         mode_names = {
@@ -843,11 +1547,13 @@ class ProfileEditDialog(QDialog):
             parent.MODE_COMBO: parent.tr('mode_combo'),
             parent.MODE_SEQUENCE: parent.tr('mode_sequence'),
             parent.MODE_COORDINATES: parent.tr('mode_coordinates'),
+            parent.MODE_SCENARIO: parent.tr('mode_scenario'),
             "Instant press": parent.tr('mode_instant'),
             "Hold key": parent.tr('mode_hold'),
             "Instant combo": parent.tr('mode_combo'),
             "Sequence press": parent.tr('mode_sequence'),
             "Coordinate clicks": parent.tr('mode_coordinates'),
+            "Recorded scenario": parent.tr('mode_scenario'),
             "Обычный клик": parent.tr('mode_instant'),
         }
         current_mode = mode_names.get(
@@ -1036,6 +1742,29 @@ class ProfileEditDialog(QDialog):
         coordinate_widget.setLayout(coordinate_layout)
         self.coordinate_widget = coordinate_widget
 
+        self.scenario_widget = QWidget()
+        scenario_layout = QVBoxLayout(self.scenario_widget)
+        scenario_layout.setContentsMargins(0, 0, 0, 0)
+        self.scenario_summary = QLabel()
+        self.scenario_summary.setWordWrap(True)
+        scenario_layout.addWidget(self.scenario_summary)
+        scenario_buttons = QHBoxLayout()
+        self.scenario_record_button = QPushButton()
+        self.scenario_record_button.clicked.connect(
+            lambda: parent.arm_scenario_recording(self)
+        )
+        self.scenario_edit_button = QPushButton()
+        self.scenario_edit_button.clicked.connect(self.edit_scenario)
+        self.scenario_clear_button = QPushButton()
+        self.scenario_clear_button.clicked.connect(self.clear_scenario)
+        for button in (
+            self.scenario_record_button,
+            self.scenario_edit_button,
+            self.scenario_clear_button,
+        ):
+            scenario_buttons.addWidget(button)
+        scenario_layout.addLayout(scenario_buttons)
+
         layout.addRow(self.name_label, self.name_edit)
         layout.addRow(self.icon_label, self.icon_edit)
         self.key_edit.installEventFilter(self)
@@ -1046,6 +1775,7 @@ class ProfileEditDialog(QDialog):
         self.sequence_label = QLabel(parent.tr('label_sequence') + ":")
         layout.addRow(self.sequence_label, sequence_widget)
         layout.addRow(self.coordinate_label, self.coordinate_widget)
+        layout.addRow(self.scenario_widget)
         layout.addRow(self.random_interval)
         self.min_label = QLabel()
         self.max_label = QLabel()
@@ -1085,6 +1815,30 @@ class ProfileEditDialog(QDialog):
         self.coordinate_clear_button.setText(
             self.parent.tr('button_clear')
         )
+        if self.scenario_record_state == "armed":
+            record_button_text = self.parent.tr(
+                "scenario_record_armed",
+                self.parent._hotkey_name(self.parent.start_hotkey),
+            )
+        elif self.scenario_record_state == "recording":
+            record_button_text = self.parent.tr(
+                "scenario_recording_status",
+                len(self.scenario_actions),
+                self.parent._hotkey_name(self.parent.stop_hotkey),
+            )
+        else:
+            record_button_text = self.parent.tr("scenario_record_button")
+        self.scenario_record_button.setText(record_button_text)
+        self.scenario_record_button.setEnabled(
+            self.scenario_record_state not in ("armed", "recording")
+        )
+        self.scenario_edit_button.setText(
+            self.parent.tr("scenario_action_edit")
+        )
+        self.scenario_clear_button.setText(
+            self.parent.tr("button_clear")
+        )
+        self._refresh_scenario_summary()
         self.coordinate_smooth_checkbox.setText(
             self.parent.tr('coordinate_smooth_move')
         )
@@ -1142,6 +1896,13 @@ class ProfileEditDialog(QDialog):
             return 0.0
 
     def accept(self):
+        if self.parent.scenario_record_dialog is self:
+            QMessageBox.warning(
+                self,
+                self.parent.tr("scenario_editor_title"),
+                self.parent.tr("scenario_record_busy"),
+            )
+            return
         if (
             self.mode_combo.currentIndex() == 4
             and (
@@ -1189,6 +1950,11 @@ class ProfileEditDialog(QDialog):
             return
         super().accept()
 
+    def reject(self):
+        if self.parent is not None:
+            self.parent._cancel_scenario_recording(self)
+        super().reject()
+
     def get_profile(self):
         mode_names = [
             self.parent.tr('mode_instant'),
@@ -1196,6 +1962,7 @@ class ProfileEditDialog(QDialog):
             self.parent.tr('mode_combo'),
             self.parent.tr('mode_sequence'),
             self.parent.tr('mode_coordinates'),
+            self.parent.tr('mode_scenario'),
         ]
         is_coordinate_mode = self.mode_combo.currentIndex() == 4
         random_click_interval = (
@@ -1215,6 +1982,7 @@ class ProfileEditDialog(QDialog):
             "key": self.parent.profile_key_to_storage(self.key_edit.text()),
             "sequence": self.sequence_edit.toPlainText(),
             "coordinates": deepcopy(self.coordinate_points),
+            "scenario": deepcopy(self.scenario_actions),
             "coordinate_smooth": (
                 self.coordinate_smooth_checkbox.isChecked()
             ),
@@ -1405,7 +2173,10 @@ class ProfileEditDialog(QDialog):
 
         is_sequence_mode = index in (2, 3)
         is_coordinate_mode = index == 4
-        needs_sequence_input = is_sequence_mode or is_coordinate_mode
+        is_scenario_mode = index == 5
+        needs_sequence_input = (
+            is_sequence_mode or is_coordinate_mode or is_scenario_mode
+        )
         self.key_edit.setVisible(not needs_sequence_input)
         self.key_assign_btn.setVisible(not needs_sequence_input)
         self.key_label.setVisible(not needs_sequence_input)
@@ -1416,6 +2187,7 @@ class ProfileEditDialog(QDialog):
         self.clear_btn.setVisible(is_sequence_mode)
         self.coordinate_label.setVisible(is_coordinate_mode)
         self.coordinate_widget.setVisible(is_coordinate_mode)
+        self.scenario_widget.setVisible(is_scenario_mode)
         self.coordinate_smooth_checkbox.setVisible(is_coordinate_mode)
         self.update_interval_ui()
         self.update_coordinate_move_ui()
@@ -1434,6 +2206,66 @@ class ProfileEditDialog(QDialog):
             self.coordinate_points = points
             self._refresh_coordinate_summary()
             self.update_coordinate_move_ui()
+
+    def edit_scenario(self):
+        dialog = ScenarioEditorDialog(self.scenario_actions, self)
+        self.parent.apply_theme()
+        if dialog.exec() == QDialog.Accepted:
+            self.scenario_actions = dialog.actions
+            self._refresh_scenario_summary()
+
+    def clear_scenario(self):
+        reply = QMessageBox.question(
+            self,
+            self.parent.tr("scenario_editor_title"),
+            self.parent.tr("scenario_record_overwrite"),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply == QMessageBox.Yes:
+            self.scenario_actions.clear()
+            self._refresh_scenario_summary()
+
+    def handle_scenario_capture_update(self, state, actions=None):
+        self.scenario_record_state = state
+        if state == "finished" and actions is not None:
+            self.scenario_actions = deepcopy(actions)
+            self.scenario_record_state = "idle"
+            self._refresh_scenario_summary()
+        elif state == "cancelled":
+            self.scenario_record_state = "idle"
+        if state == "armed":
+            text = self.parent.tr(
+                "scenario_record_armed",
+                self.parent._hotkey_name(self.parent.start_hotkey),
+            )
+        elif state == "recording":
+            count = actions if isinstance(actions, int) else len(
+                self.scenario_actions
+            )
+            text = self.parent.tr(
+                "scenario_recording_status",
+                count,
+                self.parent._hotkey_name(self.parent.stop_hotkey),
+            )
+        else:
+            text = self.parent.tr("scenario_record_button")
+        self.scenario_record_button.setText(text)
+        self.scenario_record_button.setEnabled(
+            self.scenario_record_state not in ("armed", "recording")
+        )
+
+    def _refresh_scenario_summary(self):
+        if not hasattr(self, "scenario_summary"):
+            return
+        self.scenario_summary.setText(
+            self.parent.tr(
+                "scenario_record_finished",
+                len(self.scenario_actions),
+            )
+            if self.scenario_actions
+            else self.parent.tr("scenario_actions_empty")
+        )
 
     def clear_coordinate_points(self):
         self.coordinate_points.clear()
@@ -1486,6 +2318,8 @@ class ProfileEditDialog(QDialog):
         )
 
     def closeEvent(self, event):
+        if self.parent is not None:
+            self.parent._cancel_scenario_recording(self)
         if self.parent.profile_dialog is self:
             self.parent.profile_dialog = None
         super().closeEvent(event)
@@ -1547,6 +2381,8 @@ class ProfileEditDialog(QDialog):
 class ClickerWorker(QThread):
     status_signal = Signal(str, str)
     limit_reached = Signal()
+    duration_limit_reached = Signal()
+    scenario_finished = Signal()
 
     def __init__(self, parent_clicker):
         super().__init__()
@@ -1558,6 +2394,40 @@ class ClickerWorker(QThread):
         self.click_limit_enabled = self.c.click_limit_checkbox.isChecked()
         self.click_limit = int(self.c.click_limit_edit.text() or "0")
         self.run_click_count = 0
+        self.scenario_playback = (
+            self.c.current_mode == self.c.MODE_SCENARIO
+        )
+        self.scenario_run_limit_enabled = (
+            self.scenario_playback
+            and self.c.scenario_run_limit_checkbox.isChecked()
+        )
+        self.scenario_run_limit = int(
+            self.c.scenario_run_limit_edit.text() or "0"
+        )
+        self.duration_limit_enabled = (
+            self.c.duration_limit_checkbox.isChecked()
+        )
+        self.duration_limit_seconds = (
+            int(self.c.duration_limit_edit.text() or "0") * 60
+        )
+        self.scenario_runs_completed = 0
+        self.run_started_at = time.monotonic()
+
+    def duration_limit_expired(self):
+        return (
+            self.duration_limit_enabled
+            and time.monotonic() - self.run_started_at
+            >= self.duration_limit_seconds
+        )
+
+    def remaining_duration(self):
+        if not self.duration_limit_enabled:
+            return None
+        return max(
+            0.0,
+            self.duration_limit_seconds
+            - (time.monotonic() - self.run_started_at),
+        )
 
     def record_click(self):
         self.pending_clicks += 1
@@ -1607,6 +2477,8 @@ class ClickerWorker(QThread):
                 with self.c.click_lock:
                     if not self.c.clicking:
                         break
+                if self.duration_limit_expired():
+                    break
 
                 mode = self.c.current_mode
 
@@ -1627,7 +2499,10 @@ class ClickerWorker(QThread):
 
                 elif mode == self.c.MODE_SEQUENCE:
                     for item in list(self.c.sequence_keys):
-                        if self.stop_event.is_set():
+                        if (
+                            self.stop_event.is_set()
+                            or self.duration_limit_expired()
+                        ):
                             return
                         with self.c.click_lock:
                             if not self.c.clicking:
@@ -1652,7 +2527,10 @@ class ClickerWorker(QThread):
                 elif mode == self.c.MODE_COORDINATES:
                     actions = self.c.coordinate_click_positions
                     for index, action in enumerate(actions, start=1):
-                        if self.stop_event.is_set():
+                        if (
+                            self.stop_event.is_set()
+                            or self.duration_limit_expired()
+                        ):
                             return
                         with self.c.click_lock:
                             if not self.c.clicking:
@@ -1758,6 +2636,31 @@ class ClickerWorker(QThread):
                     if not self.interruptible_sleep(cycle_interval):
                         return
                     continue
+                elif mode == self.c.MODE_SCENARIO:
+                    if not self.perform_scenario():
+                        break
+                    self.scenario_runs_completed += 1
+                    if (
+                        self.scenario_run_limit_enabled
+                        and self.scenario_runs_completed
+                        >= self.scenario_run_limit
+                    ) or self.duration_limit_expired():
+                        break
+                    interval = (
+                        random.uniform(min_interval, max_interval)
+                        if random_enabled
+                        else min_interval
+                    )
+                    remaining = self.remaining_duration()
+                    if remaining is not None:
+                        if remaining <= 0:
+                            break
+                        interval = min(interval, remaining)
+                    if not self.interruptible_sleep(interval):
+                        break
+                    if self.duration_limit_expired():
+                        break
+                    continue
                 else:  # Мгновенное нажатие
                     self.c.press_and_release(self.c.click_key, self.c.click_key_type)
                     if self.record_click():
@@ -1777,10 +2680,116 @@ class ClickerWorker(QThread):
             if held:
                 self.c.release_only(self.c.click_key, self.c.click_key_type)
             self.c.release_all()
+            if self.scenario_playback:
+                self.scenario_finished.emit()
+            if self.duration_limit_expired():
+                self.duration_limit_reached.emit()
+
+    def perform_scenario(self):
+        pressed_keys = []
+        pressed_buttons = []
+        completed = False
+        with self.c._sim_lock:
+            self.c._simulating = True
+        try:
+            for index, action in enumerate(self.c.scenario_actions, start=1):
+                if self.duration_limit_expired():
+                    return False
+                if not self.interruptible_sleep(action["delay"]):
+                    return False
+                if self.duration_limit_expired():
+                    return False
+                action_type = action["type"]
+                if action_type in ("key_press", "key_release"):
+                    key = self.c.parse_key_token(action["key"])
+                    if key is None or isinstance(key, mouse.Button):
+                        raise ValueError(
+                            self.c.tr("scenario_invalid_key")
+                        )
+                    if action_type == "key_press":
+                        self.c.keyboard_controller.press(key)
+                        if key not in pressed_keys:
+                            pressed_keys.append(key)
+                    else:
+                        self.c.keyboard_controller.release(key)
+                        if key in pressed_keys:
+                            pressed_keys.remove(key)
+                elif action_type in ("mouse_press", "mouse_release"):
+                    button = self.c.parse_key_token(action["button"])
+                    if not isinstance(button, mouse.Button):
+                        raise ValueError(
+                            self.c.tr("scenario_invalid_button")
+                        )
+                    self.c.mouse_controller.position = (
+                        action["x"],
+                        action["y"],
+                    )
+                    if action_type == "mouse_press":
+                        self.c.mouse_controller.press(button)
+                        if button not in pressed_buttons:
+                            pressed_buttons.append(button)
+                    else:
+                        self.c.mouse_controller.release(button)
+                        if button in pressed_buttons:
+                            pressed_buttons.remove(button)
+                elif action_type == "mouse_move":
+                    self.c.mouse_controller.position = (
+                        action["x"],
+                        action["y"],
+                    )
+                elif action_type == "scroll":
+                    self.c.mouse_controller.position = (
+                        action["x"],
+                        action["y"],
+                    )
+                    self.c.mouse_controller.scroll(
+                        action["dx"],
+                        action["dy"],
+                    )
+                self.report_status(
+                    self.c.tr(
+                        "scenario_playback_status",
+                        index,
+                        len(self.c.scenario_actions),
+                    ),
+                    "red",
+                )
+            completed = not self.stop_event.is_set()
+        except Exception as error:
+            logging.getLogger(__name__).exception(
+                "Scenario playback failed"
+            )
+            self.status_signal.emit(
+                self.c.tr("scenario_playback_error", error),
+                "red",
+            )
+            return False
+        finally:
+            for key in reversed(pressed_keys):
+                try:
+                    self.c.keyboard_controller.release(key)
+                except Exception:
+                    logging.getLogger(__name__).exception(
+                        "Could not release a scenario key"
+                    )
+            for button in reversed(pressed_buttons):
+                try:
+                    self.c.mouse_controller.release(button)
+                except Exception:
+                    logging.getLogger(__name__).exception(
+                        "Could not release a scenario mouse button"
+                    )
+            with self.c._sim_lock:
+                self.c._simulating = False
+        return completed
 
     def perform_coordinate_swipe(self, action):
         points = action["points"]
-        if not points or self.stop_event.is_set():
+        if (
+            not points
+            or self.stop_event.is_set()
+            or self.duration_limit_expired()
+        ):
             return False
         button = action["button"]
         self.c.mouse_controller.position = points[0]
@@ -1790,7 +2799,7 @@ class ClickerWorker(QThread):
         try:
             self.c.mouse_controller.press(button)
             pressed = True
-            if self.stop_event.wait(0.01):
+            if not self.interruptible_sleep(0.01):
                 return False
             if len(points) < 2:
                 return True
@@ -1810,7 +2819,10 @@ class ClickerWorker(QThread):
             )
             if duration <= 0 or total_length <= 0:
                 for point in points[1:]:
-                    if self.stop_event.is_set():
+                    if (
+                        self.stop_event.is_set()
+                        or self.duration_limit_expired()
+                    ):
                         return False
                     self.c.mouse_controller.position = point
                 return not self.stop_event.is_set()
@@ -1819,7 +2831,10 @@ class ClickerWorker(QThread):
             travelled = 0.0
             segment_index = 0
             while True:
-                if self.stop_event.is_set():
+                if (
+                    self.stop_event.is_set()
+                    or self.duration_limit_expired()
+                ):
                     return False
                 elapsed = time.perf_counter() - started_at
                 progress = min(1.0, elapsed / duration)
@@ -1850,8 +2865,8 @@ class ClickerWorker(QThread):
                 )
                 self.c.mouse_controller.position = position
                 if progress >= 1.0:
-                    return True
-                if self.stop_event.wait(
+                    return not self.duration_limit_expired()
+                if not self.interruptible_sleep(
                     min(1 / 60, max(0.0, duration - elapsed))
                 ):
                     return False
@@ -1868,19 +2883,30 @@ class ClickerWorker(QThread):
             if not self.c.clicking or self.stop_event.is_set():
                 return False
         duration = max(0.0, duration)
+        remaining = self.remaining_duration()
+        if remaining is not None:
+            if remaining <= 0:
+                return False
+            duration = min(duration, remaining)
         if duration < 0.01:
             deadline = time.perf_counter() + duration
             while time.perf_counter() < deadline:
-                if self.stop_event.is_set():
+                if self.stop_event.is_set() or self.duration_limit_expired():
                     return False
                 time.sleep(0)
-            return not self.stop_event.is_set()
-        return not self.stop_event.wait(duration)
+            return (
+                not self.stop_event.is_set()
+                and not self.duration_limit_expired()
+            )
+        return (
+            not self.stop_event.wait(duration)
+            and not self.duration_limit_expired()
+        )
 
     def move_cursor_smoothly(self, x, y, duration):
         destination = (int(x), int(y))
         if duration <= 0:
-            if self.stop_event.is_set():
+            if self.stop_event.is_set() or self.duration_limit_expired():
                 return False
             self.c.mouse_controller.position = destination
             return True
@@ -1899,8 +2925,10 @@ class ClickerWorker(QThread):
                     progress,
                 )
                 if progress >= 1.0:
-                    return True
-                if self.stop_event.wait(min(1 / 60, duration - elapsed)):
+                    return not self.duration_limit_expired()
+                if not self.interruptible_sleep(
+                    min(1 / 60, duration - elapsed)
+                ):
                     return False
         finally:
             with self.c._sim_lock:
@@ -2278,8 +3306,21 @@ class ProfileWidget(QFrame):
             self.parent.tr('mode_coordinates'),
             "Coordinate clicks",
         }
+        scenario_modes = {
+            self.parent.MODE_SCENARIO,
+            self.parent.tr('mode_scenario'),
+            "Recorded scenario",
+        }
         sequence = profile.get("sequence", "").strip()
-        if mode_value in coordinate_modes:
+        if mode_value in scenario_modes:
+            actions = profile.get("scenario", [])
+            key_text = (
+                self.parent.tr("scenario_record_finished", len(actions))
+                if actions
+                else self.parent.tr("scenario_actions_empty")
+            )
+            key_tooltip = ""
+        elif mode_value in coordinate_modes:
             points = profile.get("coordinates", [])
             key_text = (
                 self.parent.tr(
@@ -2360,6 +3401,7 @@ class MainWindow(QMainWindow):
     MODE_INSTANT = "Мгновенное нажатие"
     MODE_COMBO = "Мгновенная комбинация"
     MODE_COORDINATES = "Клики по координатам"
+    MODE_SCENARIO = "Записанный сценарий"
 
     # Сигналы для потокобезопасного обновления GUI
     hotkey_label_signal = Signal(str)
@@ -2373,6 +3415,7 @@ class MainWindow(QMainWindow):
     sequence_input_signal = Signal(str)
     sequence_recording_signal = Signal(bool)
     settings_save_signal = Signal()
+    scenario_capture_signal = Signal(str, object)
 
     def __init__(self):
         super().__init__()
@@ -2409,6 +3452,20 @@ class MainWindow(QMainWindow):
         self.sequence_recording_down = set()
         self.coordinate_recording_active = False
         self.coordinate_points = []
+        self.scenario_capture_lock = threading.RLock()
+        self.scenario_record_state = "idle"
+        self.scenario_record_dialog = None
+        self.scenario_record_actions = []
+        self.scenario_record_last_at = 0.0
+        self.scenario_last_mouse_move_at = 0.0
+        self.scenario_last_mouse_position = None
+        self.scenario_actions = []
+        self.standalone_scenario_actions = []
+        self._mode_tutorial_dialog = None
+        self._mode_tutorial_highlights = []
+        self._tutorial_offer_version = None
+        self._tutorial_offer_dismissed = False
+        self._tutorial_prompt_pending = True
         self.coordinate_click_positions = []
         self.coordinate_smooth_enabled = False
         self.coordinate_move_duration = 0.3
@@ -2454,6 +3511,11 @@ class MainWindow(QMainWindow):
         self.profiles = self.load_profiles()
         self.build_ui()
         self.load_settings()
+        self.standalone_scenario_actions = self.load_standalone_scenario()
+        if self.current_mode == self.MODE_SCENARIO:
+            self.scenario_actions = deepcopy(
+                self.standalone_scenario_actions
+            )
         self.update_language()
         QApplication.instance().installEventFilter(self)
 
@@ -2480,6 +3542,9 @@ class MainWindow(QMainWindow):
         self.stop_request_signal.connect(self.stop_clicker)
         self.sequence_input_signal.connect(self._append_sequence_input)
         self.sequence_recording_signal.connect(self._set_sequence_recording)
+        self.scenario_capture_signal.connect(
+            self._handle_scenario_capture_update
+        )
         self.settings_save_signal.connect(self.save_settings)
         self._click_stats_timer = QTimer(self)
         self._click_stats_timer.setInterval(250)
@@ -2492,6 +3557,8 @@ class MainWindow(QMainWindow):
         # Обновляем состояние кнопок управления горячими клавишами
         self.update_hotkey_ui()
         QTimer.singleShot(1000, self.check_for_updates)
+        if self._tutorial_prompt_pending:
+            QTimer.singleShot(1500, self._offer_tutorial_on_first_launch)
 
     def check_for_updates(self, manual=False):
         if manual:
@@ -2596,10 +3663,242 @@ class MainWindow(QMainWindow):
         )
         self.keyboard_listener.start()
         self.mouse_listener = mouse.Listener(
-            on_click=self.on_mouse_click
+            on_move=self.on_mouse_move,
+            on_click=self.on_mouse_click,
+            on_scroll=self.on_mouse_scroll,
         )
         self.mouse_listener.start()
         self.listeners_started = True
+
+    def arm_scenario_recording(self, dialog):
+        is_main_mode = dialog is self
+        if is_main_mode:
+            if self.current_mode != self.MODE_SCENARIO:
+                return
+            current_actions = self.scenario_actions
+            binding_recording = False
+        else:
+            if dialog.mode_combo.currentText() != self.tr("mode_scenario"):
+                return
+            current_actions = dialog.scenario_actions
+            binding_recording = dialog.binding_recording
+        if not self.hotkeys_enabled:
+            QMessageBox.warning(
+                dialog,
+                self.tr("scenario_editor_title"),
+                self.tr("scenario_record_hotkeys_disabled"),
+            )
+            return
+        if (
+            self.clicking
+            or self.coordinate_recording_active
+            or self.sequence_input_active
+            or self.waiting_for_sequence_input
+            or self.waiting_for_click_key
+            or self.waiting_for_start_key
+            or self.waiting_for_stop_key
+            or self.waiting_for_emergency_key
+            or binding_recording
+            or self.scenario_record_state != "idle"
+            or self.scenario_record_dialog is not None
+        ):
+            QMessageBox.warning(
+                dialog,
+                self.tr("scenario_editor_title"),
+                self.tr("scenario_record_busy"),
+            )
+            return
+        if current_actions:
+            reply = QMessageBox.question(
+                dialog,
+                self.tr("scenario_editor_title"),
+                self.tr("scenario_record_overwrite"),
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+        reply = QMessageBox.warning(
+            dialog,
+            self.tr("scenario_editor_title"),
+            self.tr("scenario_record_warning"),
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        with self.scenario_capture_lock:
+            self.scenario_record_actions = []
+            self.scenario_record_last_at = 0.0
+            self.scenario_last_mouse_move_at = 0.0
+            self.scenario_last_mouse_position = None
+            self.scenario_record_dialog = dialog
+            self.scenario_record_state = "armed"
+        start_name = self._hotkey_name(self.start_hotkey)
+        self.status_signal.emit(
+            self.tr("scenario_record_armed", start_name),
+            "#f0b429",
+        )
+        self.scenario_capture_signal.emit("armed", None)
+
+    def _begin_scenario_recording(self):
+        with self.scenario_capture_lock:
+            if self.scenario_record_state != "armed":
+                return
+            self.scenario_record_actions = []
+            self.scenario_record_last_at = time.monotonic()
+            self.scenario_last_mouse_move_at = 0.0
+            self.scenario_last_mouse_position = None
+            self.scenario_record_state = "recording"
+        self.scenario_capture_signal.emit("recording", 0)
+        self.status_signal.emit(
+            self.tr(
+                "scenario_recording_status",
+                0,
+                self._hotkey_name(self.stop_hotkey),
+            ),
+            "#f0b429",
+        )
+
+    def _finish_scenario_recording(self):
+        with self.scenario_capture_lock:
+            if self.scenario_record_state != "recording":
+                return
+            actions = deepcopy(self.scenario_record_actions)
+            self.scenario_record_state = "idle"
+        self.scenario_capture_signal.emit("finished", actions)
+        self.status_signal.emit(
+            self.tr("scenario_record_finished", len(actions)),
+            "#35d07f",
+        )
+
+    def _cancel_scenario_recording(self, dialog=None):
+        with self.scenario_capture_lock:
+            if (
+                self.scenario_record_state == "idle"
+                or (
+                    dialog is not None
+                    and self.scenario_record_dialog is not dialog
+                )
+            ):
+                return
+            self.scenario_record_state = "idle"
+            self.scenario_record_actions = []
+        self.scenario_capture_signal.emit("cancelled", None)
+        self.status_signal.emit(self.tr("status_stopped"), "#91a4ba")
+
+    def _record_scenario_event(self, event):
+        finish_at_limit = False
+        count = 0
+        with self.scenario_capture_lock:
+            if self.scenario_record_state != "recording":
+                return
+            if len(self.scenario_record_actions) >= MAX_SCENARIO_ACTIONS:
+                finish_at_limit = True
+            else:
+                now = time.monotonic()
+                event["delay"] = max(0.0, now - self.scenario_record_last_at)
+                self.scenario_record_last_at = now
+                self.scenario_record_actions.append(event)
+                count = len(self.scenario_record_actions)
+        if finish_at_limit:
+            self._finish_scenario_recording()
+            self.status_signal.emit(
+                self.tr("scenario_record_limit"),
+                "#f0b429",
+            )
+        elif count and count % 25 == 0:
+            self.scenario_capture_signal.emit("recording", count)
+
+    @Slot(str, object)
+    def _handle_scenario_capture_update(self, state, actions):
+        dialog = self.scenario_record_dialog
+        if dialog is self:
+            self.handle_scenario_capture_update(state, actions)
+        elif dialog is not None:
+            dialog.handle_scenario_capture_update(state, actions)
+        if state in ("finished", "cancelled"):
+            self.scenario_record_dialog = None
+
+    def handle_scenario_capture_update(self, state, actions=None):
+        if state == "finished" and actions is not None:
+            try:
+                normalized = self._normalize_scenario_actions(actions)
+            except ValueError as error:
+                QMessageBox.warning(
+                    self,
+                    self.tr("scenario_editor_title"),
+                    str(error),
+                )
+            else:
+                self.scenario_actions = normalized
+                self.standalone_scenario_actions = deepcopy(normalized)
+                self.save_standalone_scenario()
+                self.status_signal.emit(
+                    self.tr("scenario_record_finished", len(normalized)),
+                    "#35d07f",
+                )
+        self._refresh_main_scenario_summary()
+        self._update_main_scenario_controls()
+
+    def _refresh_main_scenario_summary(self):
+        if not hasattr(self, "main_scenario_summary"):
+            return
+        self.main_scenario_summary.setText(
+            self.tr("scenario_standalone_summary", len(self.scenario_actions))
+            if self.scenario_actions
+            else self.tr("scenario_actions_empty")
+        )
+
+    def _update_main_scenario_controls(self):
+        if not hasattr(self, "main_scenario_record_button"):
+            return
+        state = self.scenario_record_state
+        if state == "armed":
+            record_text = self.tr(
+                "scenario_record_armed",
+                self._hotkey_name(self.start_hotkey),
+            )
+        elif state == "recording":
+            record_text = self.tr(
+                "scenario_recording_status",
+                len(self.scenario_record_actions),
+                self._hotkey_name(self.stop_hotkey),
+            )
+        else:
+            record_text = self.tr("scenario_record_button")
+        self.main_scenario_record_button.setText(record_text)
+        self.main_scenario_record_button.setEnabled(
+            state not in ("armed", "recording")
+        )
+        self.main_scenario_edit_button.setText(
+            self.tr("scenario_editor_button")
+        )
+        self.main_scenario_edit_button.setEnabled(
+            state not in ("armed", "recording")
+        )
+
+    def edit_main_scenario(self):
+        if self.scenario_record_dialog is not None:
+            return
+        dialog = ScenarioEditorDialog(self.scenario_actions, self)
+        self.apply_theme()
+        if dialog.exec() != QDialog.Accepted:
+            return
+        try:
+            normalized = self._normalize_scenario_actions(dialog.actions)
+        except ValueError as error:
+            QMessageBox.warning(
+                self,
+                self.tr("scenario_editor_title"),
+                str(error),
+            )
+            return
+        self.scenario_actions = normalized
+        self.standalone_scenario_actions = deepcopy(normalized)
+        self.save_standalone_scenario()
+        self._refresh_main_scenario_summary()
 
     # ==========================================================
     # ЛОКАЛИЗАЦИЯ
@@ -2626,6 +3925,131 @@ class MainWindow(QMainWindow):
                 'emergency_stop_capture': "Нажмите клавишу...",
                 'settings_updates_section': "Обновления",
                 'settings_general_section': "Основное",
+                'settings_learning_section': "Интерактивное обучение",
+                'mode_tutorial_settings_description': (
+                    "Выберите один режим или пройдите обучение по всем."
+                ),
+                'tutorial_offer_title': "Пройти обучение?",
+                'tutorial_offer_text': (
+                    "Познакомьтесь с режимами кликера в коротком "
+                    "интерактивном обучении."
+                ),
+                'tutorial_offer_details': (
+                    "Обучение доступно в настройках через кнопку "
+                    "«Показать обучение». «Пройти позже» напомнит при "
+                    "следующем запуске, а «Не показывать снова» отключит "
+                    "предложение навсегда."
+                ),
+                'tutorial_offer_start': "Пройти обучение",
+                'tutorial_offer_later': "Пройти позже",
+                'tutorial_offer_dismiss': "Не показывать снова",
+                'mode_tutorial_open_button': "Показать обучение",
+                'mode_tutorial_select_title': "Выберите обучение",
+                'mode_tutorial_select_description': (
+                    "Выберите режим, который хотите изучить, или запустите "
+                    "обучение по всем режимам."
+                ),
+                'mode_tutorial_show_all': "Показать все режимы",
+                'mode_tutorial_title': "Обучение режимам",
+                'mode_tutorial_step_choose': "1. Выберите режим",
+                'mode_tutorial_body_choose': (
+                    "Вы выбрали режим «{}». Здесь, слева в главном окне, "
+                    "находятся его настройки. На каждом шаге подсвечиваются "
+                    "нужные элементы."
+                ),
+                'mode_tutorial_step_controls': "2. Настройте режим",
+                'mode_tutorial_controls_instant': (
+                    "Назначьте клавишу или кнопку мыши. Кликер будет "
+                    "повторять нажатия с выбранным интервалом."
+                ),
+                'mode_tutorial_controls_hold': (
+                    "Назначьте клавишу или кнопку мыши, которую нужно "
+                    "удерживать во время каждого нажатия."
+                ),
+                'mode_tutorial_controls_combo': (
+                    "Введите сочетание клавиш через «+» или задайте его "
+                    "записью. Кнопка очистки сбрасывает сочетание."
+                ),
+                'mode_tutorial_controls_sequence': (
+                    "Запишите или введите клавиши и кнопки мыши по порядку. "
+                    "Кнопками рядом можно назначить или очистить список."
+                ),
+                'mode_tutorial_controls_coordinates': (
+                    "Выберите монитор и нажмите «Записать координаты»: клик "
+                    "добавляет точку, Shift+перетаскивание — свайп, F8 — "
+                    "текущую позицию курсора. Backspace отменяет последнее "
+                    "действие, Esc завершает запись."
+                ),
+                'mode_tutorial_controls_scenario': (
+                    "«Записать сценарий» подготавливает запись: нажмите "
+                    "горячую клавишу запуска, чтобы начать захват, и "
+                    "остановки — чтобы завершить. Записываются клавиши, "
+                    "клики и удержания мыши, движения курсора и прокрутка. "
+                    "В редакторе можно менять действия, порядок и задержки; "
+                    "сценарий хранится отдельно или в профиле. Запись "
+                    "захватывает ввод во всех приложениях — не записывайте "
+                    "пароли и конфиденциальный текст."
+                ),
+                'mode_tutorial_step_timing': "3. Настройте интервалы",
+                'mode_tutorial_timing_instant': (
+                    "Задайте паузу между нажатиями. Случайный интервал "
+                    "выбирает задержку между указанными минимумом и максимумом."
+                ),
+                'mode_tutorial_timing_hold': (
+                    "Настройте длительность удержания и паузу между "
+                    "повторениями; для паузы можно включить случайный интервал."
+                ),
+                'mode_tutorial_timing_combo': (
+                    "Задайте паузу между комбинациями. Случайный интервал "
+                    "позволяет указать диапазон задержки."
+                ),
+                'mode_tutorial_timing_sequence': (
+                    "Настройте паузу между действиями внутри последовательности "
+                    "и задержку перед следующим циклом."
+                ),
+                'mode_tutorial_timing_coordinates': (
+                    "Длительность перемещения и свайпа задаётся отдельно и "
+                    "может быть случайной. При плавном движении пауза между "
+                    "точками не используется; без него можно задать интервал "
+                    "между действиями. Интервал цикла настраивается отдельно; "
+                    "для доступных интервалов можно задать случайный диапазон."
+                ),
+                'mode_tutorial_timing_scenario': (
+                    "После каждого полного воспроизведения сценарий повторяется. "
+                    "Задайте фиксированный интервал или случайный диапазон "
+                    "между повторами."
+                ),
+                'mode_tutorial_step_limits': "4. Лимиты и автоостановка",
+                'mode_tutorial_body_limits': (
+                    "Лимит времени работает во всех режимах. Включите его и "
+                    "задайте длительность в минутах. Если вместе с ним "
+                    "включён другой лимит, кликер остановится при первом "
+                    "достигнутом условии."
+                ),
+                'mode_tutorial_body_click_limit': (
+                    "В этом режиме также можно остановиться после заданного "
+                    "числа кликов. Без лимитов работа продолжается до ручной "
+                    "остановки."
+                ),
+                'mode_tutorial_body_scenario_limit': (
+                    "Для сценариев вместо лимита кликов доступно ограничение "
+                    "по числу полных выполнений. Без лимитов сценарий "
+                    "повторяется до ручной остановки."
+                ),
+                'mode_tutorial_step_hotkeys': "5. Настройте горячие клавиши",
+                'mode_tutorial_body_hotkeys': (
+                    "Назначьте клавиши запуска и остановки (по умолчанию "
+                    "F6 и F7) или временно выключите глобальные бинды. "
+                    "Аварийная остановка настраивается отдельно в настройках."
+                ),
+                'mode_tutorial_step_run': "6. Запустите работу",
+                'mode_tutorial_body_run': (
+                    "Нажмите «Запустить» или горячую клавишу запуска. Для "
+                    "остановки используйте кнопку или горячую клавишу "
+                    "остановки. Быстрые профили справа позволяют сохранить "
+                    "и повторно использовать настройки. Обучение только "
+                    "показывает интерфейс и не запускает действия."
+                ),
                 'settings_bug_report_section': "Сообщить об ошибке",
                 'settings_bug_report_description': (
                     "Обратная связь помогает нам становиться лучше. "
@@ -2700,6 +4124,7 @@ class MainWindow(QMainWindow):
                 'profile_random_invalid': "Некорректный случайный интервал в профиле «{}»",
                 'profile_sequence_invalid': "Некорректная последовательность в профиле «{}»",
                 'profile_coordinates_invalid': "Некорректные координаты в профиле «{}»",
+                'profile_scenario_invalid': "Некорректный сценарий в профиле «{}»",
                 'profile_coordinate_smooth_invalid': (
                     "Некорректный параметр плавного перемещения в профиле «{}»"
                 ),
@@ -2731,6 +4156,77 @@ class MainWindow(QMainWindow):
                 'mode_sequence': "Последовательное нажатие",
                 'mode_combo': "Мгновенная комбинация",
                 'mode_coordinates': "Клики по координатам",
+                'mode_scenario': "Записанный сценарий",
+                'scenario_mode_hint': (
+                    "Запишите или отредактируйте сценарий прямо здесь. "
+                    "Start запускает его один раз, Stop останавливает."
+                ),
+                'scenario_editor_button': "Редактировать сценарий",
+                'scenario_standalone_summary': "Действий в сценарии: {}",
+                'scenario_record_button': "Записать сценарий",
+                'scenario_record_armed': "Нажмите {} для начала записи.",
+                'scenario_recording_status': (
+                    "Запись: {} действий. Нажмите {} для остановки."
+                ),
+                'scenario_record_finished': "Записано действий: {}",
+                'scenario_playback_status': "Сценарий: действие {} из {}",
+                'scenario_playback_error': "Ошибка воспроизведения сценария: {}",
+                'scenario_record_warning': (
+                    "Запись будет захватывать клавиатуру, мышь и вводимый "
+                    "текст во всех приложениях, пока не нажата клавиша Stop. "
+                    "Не записывайте пароли и конфиденциальные данные."
+                ),
+                'scenario_record_overwrite': (
+                    "Новая запись заменит текущий сценарий. Продолжить?"
+                ),
+                'scenario_record_busy': (
+                    "Завершите текущую операцию и повторите запись."
+                ),
+                'scenario_record_limit': (
+                    "Достигнут предел размера сценария. Запись остановлена."
+                ),
+                'scenario_action_limit': (
+                    "В сценарии нельзя сохранить больше 100 000 действий."
+                ),
+                'scenario_save_error': (
+                    "Не удалось сохранить отдельный сценарий."
+                ),
+                'scenario_record_hotkeys_disabled': (
+                    "Сначала включите глобальные горячие клавиши."
+                ),
+                'scenario_actions_required': (
+                    "Добавьте или запишите хотя бы одно действие."
+                ),
+                'scenario_editor_title': "Редактор сценария",
+                'scenario_actions_empty': "Сценарий пока пуст.",
+                'scenario_action_title': "Действие сценария",
+                'scenario_action_add': "Добавить",
+                'scenario_action_edit': "Изменить",
+                'scenario_action_delete': "Удалить",
+                'scenario_action_up': "Вверх",
+                'scenario_action_down': "Вниз",
+                'scenario_action_type': "Действие",
+                'scenario_action_key': "Клавиша",
+                'scenario_action_button': "Кнопка мыши",
+                'scenario_action_x': "Позиция X",
+                'scenario_action_y': "Позиция Y",
+                'scenario_action_dx': "Прокрутка X",
+                'scenario_action_dy': "Прокрутка Y",
+                'scenario_action_delay': "Пауза перед действием (сек.)",
+                'scenario_type_key_press': "Нажать клавишу",
+                'scenario_type_key_release': "Отпустить клавишу",
+                'scenario_type_mouse_press': "Нажать кнопку мыши",
+                'scenario_type_mouse_release': "Отпустить кнопку мыши",
+                'scenario_type_mouse_move': "Переместить курсор",
+                'scenario_type_scroll': "Прокрутить колесо",
+                'scenario_invalid_delay': "Укажите корректную паузу.",
+                'scenario_invalid_key': "Укажите поддерживаемую клавишу.",
+                'scenario_invalid_button': "Укажите кнопку мыши.",
+                'scenario_invalid_position': "Укажите корректные координаты.",
+                'scenario_invalid_scroll': "Укажите ненулевую прокрутку.",
+                'scenario_editor_save_button': "Сохранить",
+                'tutorial_back': "Назад",
+                'tutorial_next': "Далее",
                 'coordinate_monitor': "Монитор для записи",
                 'coordinate_recorder_title': "Запись координат",
                 'coordinate_recorder_instructions': (
@@ -2804,6 +4300,19 @@ class MainWindow(QMainWindow):
                 'label_coordinate_random_interval': "Случайный интервал между действиями",
                 'label_coordinate_random_cycle_interval': "Случайный интервал между циклами",
                 'label_random_interval': "Включить случайный интервал",
+                'scenario_interval': "Интервал между сценариями, сек.",
+                'scenario_min_interval': "Мин. интервал между сценариями, сек.",
+                'scenario_max_interval': "Макс. интервал между сценариями, сек.",
+                'scenario_random_interval': "Случайный интервал между сценариями",
+                'scenario_run_limit': "Остановиться после",
+                'scenario_run_limit_suffix': "выполнений сценария",
+                'duration_limit': "Остановиться через",
+                'duration_limit_suffix': "мин.",
+                'limits_hint': (
+                    "Лимит времени действует во всех режимах. Если включено "
+                    "несколько ограничений, кликер остановится при первом "
+                    "достигнутом."
+                ),
                 'click_limit_enabled': "Остановиться после",
                 'click_limit_suffix': "кликов",
                 'label_sec': "сек.",
@@ -2870,6 +4379,125 @@ class MainWindow(QMainWindow):
                 'emergency_stop_capture': "Press a key...",
                 'settings_updates_section': "Updates",
                 'settings_general_section': "General",
+                'settings_learning_section': "Interactive tutorials",
+                'mode_tutorial_settings_description': (
+                    "Choose one mode or take the tutorial for all modes."
+                ),
+                'tutorial_offer_title': "Would you like a tutorial?",
+                'tutorial_offer_text': (
+                    "Explore the clicker modes with a short interactive tutorial."
+                ),
+                'tutorial_offer_details': (
+                    "You can open the tutorial later from Settings using "
+                    "“Show tutorial”. “Later” will remind you next time you "
+                    "launch the app; “Don't show again” permanently dismisses "
+                    "this offer."
+                ),
+                'tutorial_offer_start': "Start tutorial",
+                'tutorial_offer_later': "Later",
+                'tutorial_offer_dismiss': "Don't show again",
+                'mode_tutorial_open_button': "Show tutorial",
+                'mode_tutorial_select_title': "Choose a tutorial",
+                'mode_tutorial_select_description': (
+                    "Choose a mode to learn or start the tutorial for all modes."
+                ),
+                'mode_tutorial_show_all': "Show all modes",
+                'mode_tutorial_title': "Mode tutorials",
+                'mode_tutorial_step_choose': "1. Choose a mode",
+                'mode_tutorial_body_choose': (
+                    "You selected {}. Its settings are on the left side of "
+                    "the main window. Each step highlights the relevant controls."
+                ),
+                'mode_tutorial_step_controls': "2. Configure the mode",
+                'mode_tutorial_controls_instant': (
+                    "Assign a keyboard key or mouse button. The clicker "
+                    "repeats the press using the selected interval."
+                ),
+                'mode_tutorial_controls_hold': (
+                    "Assign the keyboard key or mouse button to hold during "
+                    "each press."
+                ),
+                'mode_tutorial_controls_combo': (
+                    "Enter a key combination separated by “+” or record it. "
+                    "Use Clear to reset the combination."
+                ),
+                'mode_tutorial_controls_sequence': (
+                    "Record or enter keyboard keys and mouse buttons in order. "
+                    "Use the nearby buttons to record or clear the list."
+                ),
+                'mode_tutorial_controls_coordinates': (
+                    "Choose a monitor and click Record coordinates: click to "
+                    "add a point, Shift+drag to add a swipe, or F8 to capture "
+                    "the cursor position. Backspace removes the last action; "
+                    "Esc finishes recording."
+                ),
+                'mode_tutorial_controls_scenario': (
+                    "Record scenario prepares a recording: press the Start "
+                    "hotkey to begin capturing and the Stop hotkey to finish. "
+                    "It captures keys, mouse clicks and holds, cursor movement, "
+                    "and scrolling. Edit actions, order, and delays in the "
+                    "editor; save scenarios separately or with a profile. "
+                    "Recording captures input in every app, so do not record "
+                    "passwords or sensitive text."
+                ),
+                'mode_tutorial_step_timing': "3. Set the timing",
+                'mode_tutorial_timing_instant': (
+                    "Set the pause between presses. Random interval chooses "
+                    "a delay between the selected minimum and maximum."
+                ),
+                'mode_tutorial_timing_hold': (
+                    "Set the hold duration and pause between repeats. You can "
+                    "randomize the pause."
+                ),
+                'mode_tutorial_timing_combo': (
+                    "Set the pause between combinations. Random interval "
+                    "lets you define a delay range."
+                ),
+                'mode_tutorial_timing_sequence': (
+                    "Set the pause between actions in the sequence and the "
+                    "delay before the next cycle."
+                ),
+                'mode_tutorial_timing_coordinates': (
+                    "Set cursor and swipe duration separately; it can be "
+                    "randomized. Smooth movement disables the pause between "
+                    "points; without it, configure the action interval. "
+                    "The cycle interval is separate, and supported intervals "
+                    "can use a random range."
+                ),
+                'mode_tutorial_timing_scenario': (
+                    "The scenario repeats after each complete playback. "
+                    "Set a fixed delay or random range between repeats."
+                ),
+                'mode_tutorial_step_limits': "4. Limits and automatic stop",
+                'mode_tutorial_body_limits': (
+                    "The time limit works in every mode. Enable it and set "
+                    "the duration in minutes. If another limit is also "
+                    "enabled, the clicker stops as soon as the first "
+                    "condition is reached."
+                ),
+                'mode_tutorial_body_click_limit': (
+                    "This mode also supports stopping after a set number of "
+                    "clicks. Without limits, it keeps running until stopped "
+                    "manually."
+                ),
+                'mode_tutorial_body_scenario_limit': (
+                    "Scenario mode has a limit on the number of complete runs "
+                    "instead of a click limit. With no limits, it repeats "
+                    "until stopped manually."
+                ),
+                'mode_tutorial_step_hotkeys': "5. Set the hotkeys",
+                'mode_tutorial_body_hotkeys': (
+                    "Assign the Start and Stop keys (F6 and F7 by default) "
+                    "or temporarily disable global hotkeys. Configure the "
+                    "emergency stop key separately in Settings."
+                ),
+                'mode_tutorial_step_run': "6. Run the mode",
+                'mode_tutorial_body_run': (
+                    "Click Start or press the Start hotkey. Use the Stop "
+                    "button or hotkey to finish. Quick profiles on the right "
+                    "let you save and reuse settings. This tutorial only "
+                    "shows the interface; it does not run any actions."
+                ),
                 'settings_bug_report_section': "Bug report",
                 'settings_bug_report_description': (
                     "Your feedback helps us improve. Found a bug? "
@@ -2944,6 +4572,7 @@ class MainWindow(QMainWindow):
                 'profile_random_invalid': "Invalid random interval in profile \"{}\"",
                 'profile_sequence_invalid': "Invalid sequence in profile \"{}\"",
                 'profile_coordinates_invalid': "Invalid coordinates in profile \"{}\"",
+                'profile_scenario_invalid': "Invalid scenario in profile \"{}\"",
                 'profile_coordinate_smooth_invalid': (
                     "Invalid smooth-movement setting in profile \"{}\""
                 ),
@@ -2975,6 +4604,77 @@ class MainWindow(QMainWindow):
                 'mode_sequence': "Sequence press",
                 'mode_combo': "Instant combo",
                 'mode_coordinates': "Coordinate clicks",
+                'mode_scenario': "Recorded scenario",
+                'scenario_mode_hint': (
+                    "Record or edit a scenario here. Start plays it once; "
+                    "Stop interrupts playback."
+                ),
+                'scenario_editor_button': "Edit scenario",
+                'scenario_standalone_summary': "Scenario actions: {}",
+                'scenario_record_button': "Record scenario",
+                'scenario_record_armed': "Press {} to start recording.",
+                'scenario_recording_status': (
+                    "Recording: {} actions. Press {} to stop."
+                ),
+                'scenario_record_finished': "Recorded actions: {}",
+                'scenario_playback_status': "Scenario: action {} of {}",
+                'scenario_playback_error': "Scenario playback failed: {}",
+                'scenario_record_warning': (
+                    "Recording captures keyboard, mouse, and typed text "
+                    "across all applications until Stop is pressed. "
+                    "Do not record passwords or sensitive information."
+                ),
+                'scenario_record_overwrite': (
+                    "The new recording will replace the current scenario. Continue?"
+                ),
+                'scenario_record_busy': (
+                    "Finish the current operation before recording."
+                ),
+                'scenario_record_limit': (
+                    "The scenario size limit was reached. Recording stopped."
+                ),
+                'scenario_action_limit': (
+                    "A scenario cannot contain more than 100,000 actions."
+                ),
+                'scenario_save_error': (
+                    "Could not save the standalone scenario."
+                ),
+                'scenario_record_hotkeys_disabled': (
+                    "Enable global hotkeys before recording."
+                ),
+                'scenario_actions_required': (
+                    "Add or record at least one action."
+                ),
+                'scenario_editor_title': "Scenario editor",
+                'scenario_actions_empty': "The scenario is empty.",
+                'scenario_action_title': "Scenario action",
+                'scenario_action_add': "Add",
+                'scenario_action_edit': "Edit",
+                'scenario_action_delete': "Delete",
+                'scenario_action_up': "Up",
+                'scenario_action_down': "Down",
+                'scenario_action_type': "Action",
+                'scenario_action_key': "Key",
+                'scenario_action_button': "Mouse button",
+                'scenario_action_x': "X position",
+                'scenario_action_y': "Y position",
+                'scenario_action_dx': "Scroll X",
+                'scenario_action_dy': "Scroll Y",
+                'scenario_action_delay': "Delay before action (sec.)",
+                'scenario_type_key_press': "Press key",
+                'scenario_type_key_release': "Release key",
+                'scenario_type_mouse_press': "Press mouse button",
+                'scenario_type_mouse_release': "Release mouse button",
+                'scenario_type_mouse_move': "Move cursor",
+                'scenario_type_scroll': "Scroll wheel",
+                'scenario_invalid_delay': "Enter a valid delay.",
+                'scenario_invalid_key': "Enter a supported key.",
+                'scenario_invalid_button': "Enter a mouse button.",
+                'scenario_invalid_position': "Enter valid coordinates.",
+                'scenario_invalid_scroll': "Enter a non-zero scroll amount.",
+                'scenario_editor_save_button': "Save",
+                'tutorial_back': "Back",
+                'tutorial_next': "Next",
                 'coordinate_monitor': "Monitor for recording",
                 'coordinate_recorder_title': "Record coordinates",
                 'coordinate_recorder_instructions': (
@@ -3044,6 +4744,18 @@ class MainWindow(QMainWindow):
                 'label_coordinate_random_interval': "Randomize interval between actions",
                 'label_coordinate_random_cycle_interval': "Randomize interval between cycles",
                 'label_random_interval': "Enable random interval",
+                'scenario_interval': "Interval between scenarios, sec.",
+                'scenario_min_interval': "Min interval between scenarios, sec.",
+                'scenario_max_interval': "Max interval between scenarios, sec.",
+                'scenario_random_interval': "Random interval between scenarios",
+                'scenario_run_limit': "Stop after",
+                'scenario_run_limit_suffix': "scenario runs",
+                'duration_limit': "Stop after",
+                'duration_limit_suffix': "min.",
+                'limits_hint': (
+                    "The time limit applies to every mode. If multiple limits "
+                    "are enabled, the clicker stops when the first is reached."
+                ),
                 'click_limit_enabled': "Stop after",
                 'click_limit_suffix': "clicks",
                 'label_sec': "sec.",
@@ -3105,6 +4817,7 @@ class MainWindow(QMainWindow):
             self.MODE_SEQUENCE: 'mode_sequence',
             self.MODE_COMBO: 'mode_combo',
             self.MODE_COORDINATES: 'mode_coordinates',
+            self.MODE_SCENARIO: 'mode_scenario',
         }
         return self.tr(mapping.get(mode_key, mode_key))
 
@@ -3125,6 +4838,15 @@ class MainWindow(QMainWindow):
             self.tr('settings_developer_discord')
         )
         self.settings_theme_label.setText(self.tr('settings_theme'))
+        self.settings_learning_title_label.setText(
+            self.tr("settings_learning_section")
+        )
+        self.mode_tutorial_description_label.setText(
+            self.tr("mode_tutorial_settings_description")
+        )
+        self.mode_tutorial_button.setText(
+            self.tr("mode_tutorial_open_button")
+        )
         self.settings_updates_title_label.setText(
             self.tr('settings_updates_section')
         )
@@ -3161,6 +4883,9 @@ class MainWindow(QMainWindow):
         self.settings_button.setToolTip(self.tr('settings_button_tooltip'))
         self.settings_button.setAccessibleName(self.tr('settings_title'))
         self.section_mode.setText(self.tr('label_mode'))
+        self.scenario_mode_label.setText(self.tr("scenario_mode_hint"))
+        self._refresh_main_scenario_summary()
+        self._update_main_scenario_controls()
         self.section_params.setText(self.tr('label_settings'))
         self.lbl_click_key.setText(self.tr('label_click_key'))
         self.assign_btn.setText(self.tr('button_assign'))
@@ -3228,6 +4953,21 @@ class MainWindow(QMainWindow):
         self.click_limit_suffix.setText(
             self.tr('click_limit_suffix')
         )
+        self.scenario_run_limit_checkbox.setText(
+            self.tr("scenario_run_limit")
+        )
+        self.scenario_run_limit_suffix.setText(
+            self.tr("scenario_run_limit_suffix")
+        )
+        self.duration_limit_checkbox.setText(
+            self.tr("duration_limit")
+        )
+        self.duration_limit_suffix.setText(
+            self.tr("duration_limit_suffix")
+        )
+        self.limits_hint_label.setText(
+            self.tr("limits_hint")
+        )
         self.update_random_interval_ui()
         self.profiles_title_label.setText(self.tr('profiles_title'))
         self.add_profile_btn.setText(self.tr('add_profile'))
@@ -3256,6 +4996,7 @@ class MainWindow(QMainWindow):
             self.tr('mode_combo'),
             self.tr('mode_sequence'),
             self.tr('mode_coordinates'),
+            self.tr('mode_scenario'),
         ])
         mode_map = {
             self.MODE_INSTANT: 0,
@@ -3263,6 +5004,7 @@ class MainWindow(QMainWindow):
             self.MODE_COMBO: 2,
             self.MODE_SEQUENCE: 3,
             self.MODE_COORDINATES: 4,
+            self.MODE_SCENARIO: 5,
         }
         self.mode.setCurrentIndex(mode_map.get(self.current_mode, 0))
         self.mode.blockSignals(False)
@@ -3302,12 +5044,17 @@ class MainWindow(QMainWindow):
     def update_random_interval_ui(self):
         random_enabled = self.random_interval.isChecked()
         is_coordinate_mode = self.current_mode == self.MODE_COORDINATES
+        is_scenario_mode = self.current_mode == self.MODE_SCENARIO
         random_click_enabled = (
             self.coordinate_random_click_interval_checkbox.isChecked()
         )
         self.lbl_min_interval.setText(
             self.tr(
-                'label_coordinate_min'
+                'scenario_min_interval'
+                if is_scenario_mode and random_enabled
+                else 'scenario_interval'
+                if is_scenario_mode
+                else 'label_coordinate_min'
                 if is_coordinate_mode and random_click_enabled
                 else 'label_coordinate_single_interval'
                 if is_coordinate_mode
@@ -3318,14 +5065,18 @@ class MainWindow(QMainWindow):
         )
         self.lbl_max_interval.setText(
             self.tr(
-                'label_coordinate_max'
+                'scenario_max_interval'
+                if is_scenario_mode
+                else 'label_coordinate_max'
                 if is_coordinate_mode
                 else 'label_max'
             )
         )
         self.random_interval.setText(
             self.tr(
-                'label_coordinate_random_cycle_interval'
+                'scenario_random_interval'
+                if is_scenario_mode
+                else 'label_coordinate_random_cycle_interval'
                 if is_coordinate_mode
                 else 'label_random_interval'
             )
@@ -3351,6 +5102,10 @@ class MainWindow(QMainWindow):
 
     def _on_click_limit_toggled(self, enabled):
         self.click_limit_edit.setEnabled(enabled)
+        self.save_settings()
+
+    def _on_limit_toggled(self, edit, enabled):
+        edit.setEnabled(enabled)
         self.save_settings()
 
     def update_coordinate_move_ui(self):
@@ -3584,6 +5339,144 @@ class MainWindow(QMainWindow):
     def show_settings_dialog(self):
         self.settings_dialog.exec()
 
+    def available_modes(self):
+        return [
+            self.MODE_INSTANT,
+            self.MODE_HOLD,
+            self.MODE_COMBO,
+            self.MODE_SEQUENCE,
+            self.MODE_COORDINATES,
+            self.MODE_SCENARIO,
+        ]
+
+    def open_mode_tutorial_from_settings(self):
+        self.settings_dialog.accept()
+        QTimer.singleShot(0, self.select_mode_tutorial)
+
+    def select_mode_tutorial(self):
+        selection_dialog = ModeTutorialSelectionDialog(self)
+        if selection_dialog.exec() != QDialog.Accepted:
+            return False
+        self.show_mode_tutorial(selection_dialog.selected_modes)
+        self._tutorial_offer_version = APP_VERSION
+        self._tutorial_prompt_pending = False
+        self.save_settings()
+        return True
+
+    def _offer_tutorial_on_first_launch(self):
+        if not self._tutorial_prompt_pending or not self.isVisible():
+            return
+        if (
+            self.update_check_started
+            or QApplication.activeModalWidget() is not None
+        ):
+            QTimer.singleShot(
+                500,
+                self._offer_tutorial_on_first_launch,
+            )
+            return
+
+        dialog = QMessageBox(self)
+        dialog.setIcon(QMessageBox.Icon.Information)
+        dialog.setWindowTitle(self.tr("tutorial_offer_title"))
+        dialog.setText(self.tr("tutorial_offer_text"))
+        dialog.setInformativeText(self.tr("tutorial_offer_details"))
+        selected_action = None
+
+        def remember_action(action):
+            nonlocal selected_action
+            selected_action = action
+
+        start_button = dialog.addButton(
+            self.tr("tutorial_offer_start"),
+            QMessageBox.ButtonRole.AcceptRole,
+        )
+        start_button.clicked.connect(
+            lambda checked=False: remember_action("start")
+        )
+        later_button = dialog.addButton(
+            self.tr("tutorial_offer_later"),
+            QMessageBox.ButtonRole.ActionRole,
+        )
+        later_button.clicked.connect(
+            lambda checked=False: remember_action("later")
+        )
+        dismiss_button = dialog.addButton(
+            self.tr("tutorial_offer_dismiss"),
+            QMessageBox.ButtonRole.RejectRole,
+        )
+        dismiss_button.clicked.connect(
+            lambda checked=False: remember_action("dismiss")
+        )
+        dialog.setDefaultButton(start_button)
+        dialog.exec()
+
+        if selected_action == "start":
+            self._tutorial_offer_version = APP_VERSION
+            self._tutorial_prompt_pending = False
+            self.save_settings()
+            self.select_mode_tutorial()
+        elif selected_action == "dismiss":
+            self._tutorial_offer_version = APP_VERSION
+            self._tutorial_offer_dismissed = True
+            self._tutorial_prompt_pending = False
+            self.save_settings()
+        else:
+            self.save_settings()
+
+    def show_mode_tutorial(self, modes):
+        available_modes = self.available_modes()
+        if not modes or any(mode not in available_modes for mode in modes):
+            return
+        if self._mode_tutorial_dialog is not None:
+            self._mode_tutorial_dialog.close()
+        self.mode.setCurrentIndex(available_modes.index(modes[0]))
+        self.settings_scroll.ensureWidgetVisible(self.mode, 16, 16)
+        dialog = ModeTutorialWizard(self, modes)
+        self._mode_tutorial_dialog = dialog
+        dialog.finished.connect(
+            lambda _result, wizard=dialog: self._finish_mode_tutorial(wizard)
+        )
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _finish_mode_tutorial(self, dialog):
+        self.clear_mode_tutorial_highlights()
+        if self._mode_tutorial_dialog is dialog:
+            self._mode_tutorial_dialog = None
+
+    def highlight_mode_tutorial_targets(self, targets):
+        self.clear_mode_tutorial_highlights()
+        if targets:
+            self.settings_scroll.ensureWidgetVisible(targets[0], 16, 16)
+        for target in targets:
+            if not target.isVisible():
+                continue
+            position = target.mapTo(self, QPoint(0, 0))
+            highlight = QFrame(self)
+            highlight.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            highlight.setObjectName("modeTutorialHighlight")
+            highlight.setStyleSheet(
+                "QFrame { background: transparent; border: 3px solid "
+                "#ffd35c; border-radius: 8px; }"
+            )
+            highlight.setGeometry(
+                position.x() - 4,
+                position.y() - 4,
+                target.width() + 8,
+                target.height() + 8,
+            )
+            highlight.show()
+            highlight.raise_()
+            self._mode_tutorial_highlights.append(highlight)
+
+    def clear_mode_tutorial_highlights(self):
+        for highlight in self._mode_tutorial_highlights:
+            highlight.hide()
+            highlight.deleteLater()
+        self._mode_tutorial_highlights.clear()
+
     def manage_profiles(self):
         dialog = ProfileManagementDialog(
             self.profiles,
@@ -3695,6 +5588,8 @@ class MainWindow(QMainWindow):
             "Instant combo",
             "Обычный клик",
             "Coordinate clicks",
+            self.MODE_SCENARIO,
+            "Recorded scenario",
         }
         for language in ("ru", "en"):
             supported_modes.update(
@@ -3705,6 +5600,7 @@ class MainWindow(QMainWindow):
                     "mode_sequence",
                     "mode_combo",
                     "mode_coordinates",
+                    "mode_scenario",
                 )
             )
         if not isinstance(mode, str) or mode not in supported_modes:
@@ -3914,6 +5810,115 @@ class MainWindow(QMainWindow):
             else:
                 raise ValueError(self.tr('profile_coordinates_invalid', name))
 
+        scenario_actions = profile.get("scenario", [])
+        if (
+            not isinstance(scenario_actions, list)
+            or len(scenario_actions) > MAX_SCENARIO_ACTIONS
+        ):
+            raise ValueError(self.tr("profile_scenario_invalid", name))
+        normalized_scenario = []
+        scenario_types = {
+            "key_press",
+            "key_release",
+            "mouse_press",
+            "mouse_release",
+            "mouse_move",
+            "scroll",
+        }
+        reserved_inputs = (
+            set(self.start_hotkey)
+            | set(self.stop_hotkey)
+            | {self.emergency_stop_key}
+        )
+
+        def scenario_coordinate(value):
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or int(value) != value
+                or not -100000 <= value <= 100000
+            ):
+                raise ValueError(
+                    self.tr("profile_scenario_invalid", name)
+                )
+            return int(value)
+
+        for action in scenario_actions:
+            if not isinstance(action, dict):
+                raise ValueError(self.tr("profile_scenario_invalid", name))
+            action_type = action.get("type")
+            delay = action.get("delay")
+            if (
+                action_type not in scenario_types
+                or isinstance(delay, bool)
+                or not isinstance(delay, (int, float))
+                or not math.isfinite(delay)
+                or delay < 0
+            ):
+                raise ValueError(self.tr("profile_scenario_invalid", name))
+            normalized_action = {
+                "type": action_type,
+                "delay": float(delay),
+            }
+            if action_type in ("key_press", "key_release"):
+                key = action.get("key")
+                if not isinstance(key, str) or not key.strip():
+                    raise ValueError(
+                        self.tr("profile_scenario_invalid", name)
+                    )
+                key = self._normalize_key_name(key)
+                parsed_key = self.parse_key_token(key)
+                if (
+                    parsed_key is None
+                    or isinstance(parsed_key, mouse.Button)
+                    or key in reserved_inputs
+                ):
+                    raise ValueError(
+                        self.tr("profile_scenario_invalid", name)
+                    )
+                normalized_action["key"] = key
+            if action_type in ("mouse_press", "mouse_release"):
+                button = action.get("button")
+                if not isinstance(button, str):
+                    raise ValueError(
+                        self.tr("profile_scenario_invalid", name)
+                    )
+                parsed_button = self.parse_key_token(button)
+                if (
+                    not isinstance(parsed_button, mouse.Button)
+                    or self._button_to_str(parsed_button) in reserved_inputs
+                ):
+                    raise ValueError(
+                        self.tr("profile_scenario_invalid", name)
+                    )
+                normalized_action["button"] = self._button_to_str(
+                    parsed_button
+                )
+            if action_type in (
+                "mouse_press",
+                "mouse_release",
+                "mouse_move",
+                "scroll",
+            ):
+                normalized_action["x"] = scenario_coordinate(action.get("x"))
+                normalized_action["y"] = scenario_coordinate(action.get("y"))
+            if action_type == "scroll":
+                normalized_action["dx"] = scenario_coordinate(
+                    action.get("dx")
+                )
+                normalized_action["dy"] = scenario_coordinate(
+                    action.get("dy")
+                )
+                if (
+                    normalized_action["dx"] == 0
+                    and normalized_action["dy"] == 0
+                ):
+                    raise ValueError(
+                        self.tr("profile_scenario_invalid", name)
+                    )
+            normalized_scenario.append(normalized_action)
+
         uses_coordinate_movement = (
             is_coordinate_mode
             and (
@@ -3945,6 +5950,7 @@ class MainWindow(QMainWindow):
             "key": key.strip(),
             "sequence": sequence,
             "coordinates": normalized_coordinates,
+            "scenario": normalized_scenario,
             "coordinate_smooth": coordinate_smooth,
             "coordinate_move_duration": coordinate_move_duration,
             "coordinate_random_move_duration": (
@@ -3965,6 +5971,17 @@ class MainWindow(QMainWindow):
             ),
         }
 
+    def _normalize_scenario_actions(self, actions):
+        return self._validate_imported_profile({
+            "name": "Standalone scenario",
+            "icon": "🎬",
+            "key": "SPACE",
+            "mode": self.MODE_SCENARIO,
+            "min": 0.0,
+            "max": 0.0,
+            "scenario": actions,
+        })["scenario"]
+
     def _format_import_profile_details(self, profile):
         mode_keys = {
             self.MODE_INSTANT: 'mode_instant',
@@ -3972,6 +5989,7 @@ class MainWindow(QMainWindow):
             self.MODE_SEQUENCE: 'mode_sequence',
             self.MODE_COMBO: 'mode_combo',
             self.MODE_COORDINATES: 'mode_coordinates',
+            self.MODE_SCENARIO: 'mode_scenario',
         }
         mode_key = mode_keys.get(profile["mode"])
         if mode_key is None:
@@ -4166,6 +6184,25 @@ class MainWindow(QMainWindow):
         theme_layout.addWidget(self.theme_combo, 1)
         general_section.addLayout(theme_layout)
 
+        learning_section = add_section(
+            left_column,
+            "settings_learning_section",
+            "settings_learning_title_label",
+        )
+        self.mode_tutorial_description_label = QLabel(
+            self.tr("mode_tutorial_settings_description")
+        )
+        self.mode_tutorial_description_label.setWordWrap(True)
+        learning_section.addWidget(self.mode_tutorial_description_label)
+        self.mode_tutorial_button = QPushButton(
+            self.tr("mode_tutorial_open_button")
+        )
+        self.mode_tutorial_button.setObjectName("blue")
+        self.mode_tutorial_button.clicked.connect(
+            self.open_mode_tutorial_from_settings
+        )
+        learning_section.addWidget(self.mode_tutorial_button)
+
         emergency_section = add_section(
             left_column,
             'emergency_stop_title',
@@ -4286,11 +6323,14 @@ class MainWindow(QMainWindow):
         footer_layout.addLayout(developer_info, 1)
         footer_layout.addWidget(buttons)
         layout.addLayout(footer_layout)
-        self.settings_dialog.setMinimumHeight(360)
-        self.settings_dialog.resize(600, 360)
+        self.settings_dialog.setMinimumHeight(400)
+        self.settings_dialog.resize(700, 400)
         self.settings_dialog.setStyleSheet(
             """
-            QDialog QPushButton { padding: 6px 10px; }
+            QDialog QPushButton {
+                padding: 6px 10px;
+                min-height: 22px;
+            }
             QDialog QLineEdit, QDialog QComboBox { padding: 5px 8px; }
             QDialog QLabel#section { padding-top: 1px; }
             """
@@ -4316,6 +6356,37 @@ class MainWindow(QMainWindow):
         self.mode.view().setMinimumWidth(300)
         self.mode.currentIndexChanged.connect(self.on_mode_changed)
         layout.addWidget(self.mode)
+        self.scenario_mode_label = QLabel(
+            self.tr("scenario_mode_hint")
+        )
+        self.scenario_mode_label.setWordWrap(True)
+        self.scenario_mode_label.setStyleSheet("color: #91a4ba;")
+        layout.addWidget(self.scenario_mode_label)
+        self.main_scenario_controls = QWidget()
+        main_scenario_layout = QVBoxLayout(self.main_scenario_controls)
+        main_scenario_layout.setContentsMargins(0, 0, 0, 0)
+        main_scenario_layout.setSpacing(8)
+        scenario_action_buttons = QHBoxLayout()
+        scenario_action_buttons.setSpacing(8)
+        self.main_scenario_record_button = QPushButton()
+        self.main_scenario_record_button.setObjectName("blue")
+        self.main_scenario_record_button.clicked.connect(
+            lambda: self.arm_scenario_recording(self)
+        )
+        self.main_scenario_edit_button = QPushButton()
+        self.main_scenario_edit_button.clicked.connect(
+            self.edit_main_scenario
+        )
+        scenario_action_buttons.addWidget(self.main_scenario_record_button)
+        scenario_action_buttons.addWidget(self.main_scenario_edit_button)
+        main_scenario_layout.addLayout(scenario_action_buttons)
+        self.main_scenario_controls.hide()
+        layout.addWidget(self.main_scenario_controls)
+        self.main_scenario_summary = QLabel()
+        self.main_scenario_summary.setWordWrap(True)
+        self.main_scenario_summary.setStyleSheet("color: #91a4ba;")
+        self.main_scenario_summary.hide()
+        layout.addWidget(self.main_scenario_summary)
 
         # ---- Параметры ----
         self.section_params = QLabel()
@@ -4517,6 +6588,67 @@ class MainWindow(QMainWindow):
             self.update_random_interval_ui
         )
         layout.addWidget(self.random_interval)
+
+        self.scenario_run_limit_row = QHBoxLayout()
+        self.scenario_run_limit_checkbox = CheckmarkCheckBox()
+        self.scenario_run_limit_checkbox.toggled.connect(
+            lambda enabled: self._on_limit_toggled(
+                self.scenario_run_limit_edit,
+                enabled,
+            )
+        )
+        self.scenario_run_limit_edit = QLineEdit("1")
+        self.scenario_run_limit_edit.setValidator(
+            QIntValidator(1, 999999999, self.scenario_run_limit_edit)
+        )
+        self.scenario_run_limit_edit.setMaximumWidth(110)
+        self.scenario_run_limit_edit.setEnabled(False)
+        self.scenario_run_limit_edit.editingFinished.connect(self.save_settings)
+        self.scenario_run_limit_suffix = QLabel()
+        self.scenario_run_limit_row.addWidget(
+            self.scenario_run_limit_checkbox
+        )
+        self.scenario_run_limit_row.addWidget(self.scenario_run_limit_edit)
+        self.scenario_run_limit_row.addWidget(
+            self.scenario_run_limit_suffix
+        )
+        self.scenario_run_limit_row.addStretch()
+        layout.addLayout(self.scenario_run_limit_row)
+
+        self.duration_limit_row = QHBoxLayout()
+        self.duration_limit_checkbox = CheckmarkCheckBox()
+        self.duration_limit_checkbox.toggled.connect(
+            lambda enabled: self._on_limit_toggled(
+                self.duration_limit_edit,
+                enabled,
+            )
+        )
+        self.duration_limit_edit = QLineEdit("30")
+        self.duration_limit_edit.setValidator(
+            QIntValidator(
+                1,
+                999999999,
+                self.duration_limit_edit,
+            )
+        )
+        self.duration_limit_edit.setMaximumWidth(110)
+        self.duration_limit_edit.setEnabled(False)
+        self.duration_limit_edit.editingFinished.connect(
+            self.save_settings
+        )
+        self.duration_limit_suffix = QLabel()
+        self.duration_limit_row.addWidget(self.duration_limit_checkbox)
+        self.duration_limit_row.addWidget(self.duration_limit_edit)
+        self.duration_limit_row.addWidget(self.duration_limit_suffix)
+        self.duration_limit_row.addStretch()
+        layout.addLayout(self.duration_limit_row)
+
+        self.limits_hint_label = QLabel()
+        self.limits_hint_label.setWordWrap(True)
+        self.limits_hint_label.setStyleSheet(
+            "color: #91a4ba; font-size: 12px;"
+        )
+        layout.addWidget(self.limits_hint_label)
 
         click_limit_row = QHBoxLayout()
         self.click_limit_checkbox = CheckmarkCheckBox()
@@ -4826,6 +6958,10 @@ class MainWindow(QMainWindow):
                 self.binding_capture_keys.clear()
             if self.sequence_input_active or self.waiting_for_sequence_input:
                 self._stop_sequence_recording()
+            if self.scenario_record_state == "recording":
+                self._finish_scenario_recording()
+            elif self.scenario_record_state == "armed":
+                self._cancel_scenario_recording()
             self._signal_worker_stop()
             self.stop_request_signal.emit()
             return
@@ -4845,6 +6981,30 @@ class MainWindow(QMainWindow):
             simulating = self._simulating
 
         with self.hotkey_lock:
+            if (
+                not simulating
+                and self.scenario_record_state in ("armed", "recording")
+            ):
+                token = self._normalize_key_to_str(key)
+                self.pressed_keys.add(token)
+                reserved = self.start_hotkey.union(self.stop_hotkey)
+                if self.scenario_record_state == "armed":
+                    if self._hotkey_matches(self.start_hotkey):
+                        self.hotkey_fired.add("start")
+                        self._begin_scenario_recording()
+                    elif self._hotkey_matches(self.stop_hotkey):
+                        self.hotkey_fired.add("stop")
+                        self._cancel_scenario_recording()
+                elif self._hotkey_matches(self.stop_hotkey):
+                    self.hotkey_fired.add("stop")
+                    self._finish_scenario_recording()
+                elif token not in reserved:
+                    self._record_scenario_event({
+                        "type": "key_press",
+                        "key": token,
+                    })
+                return
+
             if self.profile_dialog and self.profile_dialog.binding_recording:
                 self.profile_dialog.capture_key(key)
                 return
@@ -4901,9 +7061,26 @@ class MainWindow(QMainWindow):
         if self.coordinate_recording_active:
             return
         with self.hotkey_lock:
+            token = self._normalize_key_to_str(key)
+            if self.scenario_record_state in ("armed", "recording"):
+                self.pressed_keys.discard(token)
+                if (
+                    self.scenario_record_state == "recording"
+                    and token not in self.start_hotkey.union(self.stop_hotkey)
+                ):
+                    self._record_scenario_event({
+                        "type": "key_release",
+                        "key": token,
+                    })
+                if not self.pressed_keys or self.pressed_keys.isdisjoint(
+                    self.start_hotkey.union(self.stop_hotkey)
+                ):
+                    self.hotkey_fired.clear()
+                return
+
             if self.waiting_for_sequence_input:
                 self.sequence_recording_down.discard(
-                    self._normalize_key_to_str(key)
+                    token
                 )
                 return
 
@@ -4912,7 +7089,7 @@ class MainWindow(QMainWindow):
                 self._finish_hotkey_capture(target)
                 return
 
-            self.pressed_keys.discard(self._normalize_key_to_str(key))
+            self.pressed_keys.discard(token)
 
             # Сброс флага hotkey_fired, чтобы можно было заново нажать
             if not self.pressed_keys or self.pressed_keys.isdisjoint(
@@ -4944,6 +7121,40 @@ class MainWindow(QMainWindow):
             return
 
         with self.hotkey_lock:
+            token = self._normalize_key_to_str(button)
+            if self.scenario_record_state in ("armed", "recording"):
+                if pressed:
+                    self.pressed_keys.add(token)
+                else:
+                    self.pressed_keys.discard(token)
+                reserved = self.start_hotkey.union(self.stop_hotkey)
+                if self.scenario_record_state == "armed" and pressed:
+                    if self._hotkey_matches(self.start_hotkey):
+                        self.hotkey_fired.add("start")
+                        self._begin_scenario_recording()
+                    elif self._hotkey_matches(self.stop_hotkey):
+                        self.hotkey_fired.add("stop")
+                        self._cancel_scenario_recording()
+                elif self.scenario_record_state == "recording":
+                    if pressed and self._hotkey_matches(self.stop_hotkey):
+                        self.hotkey_fired.add("stop")
+                        self._finish_scenario_recording()
+                    elif token not in reserved:
+                        self._record_scenario_event({
+                            "type": (
+                                "mouse_press" if pressed else "mouse_release"
+                            ),
+                            "button": token,
+                            "x": int(x),
+                            "y": int(y),
+                        })
+                if not pressed and (
+                    not self.pressed_keys
+                    or self.pressed_keys.isdisjoint(reserved)
+                ):
+                    self.hotkey_fired.clear()
+                return
+
             if self.profile_dialog and self.profile_dialog.binding_recording:
                 if self._cursor_over_widget(self.profile_dialog.key_assign_btn):
                     return
@@ -5014,6 +7225,44 @@ class MainWindow(QMainWindow):
                     self.start_hotkey.union(self.stop_hotkey)
                 ):
                     self.hotkey_fired.clear()
+
+    def on_mouse_move(self, x, y):
+        if self.coordinate_recording_active:
+            return
+        with self._sim_lock:
+            if self._simulating:
+                return
+        now = time.monotonic()
+        position = (int(x), int(y))
+        with self.scenario_capture_lock:
+            if self.scenario_record_state != "recording":
+                return
+            if (
+                position == self.scenario_last_mouse_position
+                or now - self.scenario_last_mouse_move_at < 0.02
+            ):
+                return
+            self.scenario_last_mouse_position = position
+            self.scenario_last_mouse_move_at = now
+        self._record_scenario_event({
+            "type": "mouse_move",
+            "x": position[0],
+            "y": position[1],
+        })
+
+    def on_mouse_scroll(self, x, y, dx, dy):
+        if self.coordinate_recording_active:
+            return
+        with self._sim_lock:
+            if self._simulating:
+                return
+        self._record_scenario_event({
+            "type": "scroll",
+            "x": int(x),
+            "y": int(y),
+            "dx": int(dx),
+            "dy": int(dy),
+        })
 
     def _finish_hotkey_capture(self, target):
         with self.hotkey_lock:
@@ -5086,6 +7335,43 @@ class MainWindow(QMainWindow):
             "F7": keyboard.Key.f7, "F8": keyboard.Key.f8, "F9": keyboard.Key.f9,
             "F10": keyboard.Key.f10, "F11": keyboard.Key.f11, "F12": keyboard.Key.f12
         }
+        for token_name, key_name in (
+            ("BACKSPACE", "backspace"),
+            ("DELETE", "delete"),
+            ("HOME", "home"),
+            ("END", "end"),
+            ("PAGE_UP", "page_up"),
+            ("PAGE_DOWN", "page_down"),
+            ("INSERT", "insert"),
+            ("CAPS_LOCK", "caps_lock"),
+            ("PRINT_SCREEN", "print_screen"),
+            ("SCROLL_LOCK", "scroll_lock"),
+            ("PAUSE", "pause"),
+            ("MENU", "menu"),
+            ("NUM_LOCK", "num_lock"),
+            ("CTRL_L", "ctrl_l"),
+            ("CTRL_R", "ctrl_r"),
+            ("SHIFT_L", "shift_l"),
+            ("SHIFT_R", "shift_r"),
+            ("ALT_L", "alt_l"),
+            ("ALT_R", "alt_r"),
+            ("CMD", "cmd"),
+            ("CMD_L", "cmd_l"),
+            ("CMD_R", "cmd_r"),
+            ("WIN", "cmd"),
+            ("ALT_GR", "alt_gr"),
+        ):
+            key_value = getattr(keyboard.Key, key_name, None)
+            if key_value is not None:
+                special[token_name] = key_value
+        for function_number in range(13, 21):
+            key_value = getattr(
+                keyboard.Key,
+                "f{}".format(function_number),
+                None,
+            )
+            if key_value is not None:
+                special["F{}".format(function_number)] = key_value
         if token in special:
             return special[token]
         if len(token) == 1 and token.isprintable():
@@ -5246,6 +7532,8 @@ class MainWindow(QMainWindow):
         with self.click_lock:
             if self.clicking:
                 return
+            if self.scenario_record_state != "idle":
+                return
             try:
                 is_coordinate_mode = (
                     self.current_mode == self.MODE_COORDINATES
@@ -5270,6 +7558,10 @@ class MainWindow(QMainWindow):
                 if self.click_limit_checkbox.isChecked():
                     click_limit = int(self.click_limit_edit.text())
                     if not 1 <= click_limit <= 999999999:
+                        raise ValueError
+                if self.duration_limit_checkbox.isChecked():
+                    duration_limit = int(self.duration_limit_edit.text())
+                    if not 1 <= duration_limit <= 999999999:
                         raise ValueError
                 if self.current_mode == self.MODE_HOLD:
                     self.hold_duration = self._interval_value(self.hold_time_edit)
@@ -5352,6 +7644,35 @@ class MainWindow(QMainWindow):
                         > self.coordinate_cycle_interval_max
                     ):
                         raise ValueError
+                elif self.current_mode == self.MODE_SCENARIO:
+                    if (
+                        self.scenario_record_state != "idle"
+                        or self.scenario_record_dialog is not None
+                    ):
+                        return
+                    if self.scenario_run_limit_checkbox.isChecked():
+                        scenario_run_limit = int(
+                            self.scenario_run_limit_edit.text()
+                        )
+                        if not 1 <= scenario_run_limit <= 999999999:
+                            raise ValueError
+                    scenario_profile = self._validate_imported_profile({
+                        "name": "scenario",
+                        "icon": "🎬",
+                        "key": "SPACE",
+                        "mode": self.MODE_SCENARIO,
+                        "min": 0.0,
+                        "max": 0.0,
+                        "scenario": self.scenario_actions,
+                    })
+                    self.scenario_actions = scenario_profile["scenario"]
+                    if not self.scenario_actions:
+                        QMessageBox.warning(
+                            self,
+                            self.tr("error_title"),
+                            self.tr("scenario_actions_required"),
+                        )
+                        return
             except CoordinateScreenUnavailable as error:
                 QMessageBox.warning(
                     self,
@@ -5376,6 +7697,9 @@ class MainWindow(QMainWindow):
             self.worker = ClickerWorker(self)
             self.worker.status_signal.connect(self._set_worker_status)
             self.worker.limit_reached.connect(self.stop_clicker)
+            self.worker.duration_limit_reached.connect(self.stop_clicker)
+            if self.current_mode == self.MODE_SCENARIO:
+                self.worker.scenario_finished.connect(self.stop_clicker)
             self.worker.start()
 
     def stop_clicker(self):
@@ -5724,6 +8048,8 @@ class MainWindow(QMainWindow):
         self.save_settings()
 
     def disable_hotkeys(self):
+        if self.scenario_record_state != "idle":
+            self._cancel_scenario_recording()
         self.hotkeys_enabled = False
         self.pressed_keys.clear()
         self.hotkey_fired.clear()
@@ -5744,15 +8070,22 @@ class MainWindow(QMainWindow):
             self.MODE_COMBO,
             self.MODE_SEQUENCE,
             self.MODE_COORDINATES,
+            self.MODE_SCENARIO,
         ]
         if self.waiting_for_sequence_input:
             self._stop_sequence_recording()
         self.current_mode = modes[index]
+        if self.current_mode == self.MODE_SCENARIO:
+            self.scenario_actions = deepcopy(
+                self.standalone_scenario_actions
+            )
+        self._refresh_main_scenario_summary()
         self.update_mode_ui()
 
     def update_mode_ui(self):
         is_seq_or_combo = self.current_mode in (self.MODE_SEQUENCE, self.MODE_COMBO)
         is_coordinate_mode = self.current_mode == self.MODE_COORDINATES
+        is_scenario_mode = self.current_mode == self.MODE_SCENARIO
         if self.current_mode == self.MODE_HOLD:
             self.interval_grid.addWidget(self.lbl_hold_time, 2, 0)
             self.interval_grid.addWidget(self.hold_time_edit, 3, 0)
@@ -5776,11 +8109,25 @@ class MainWindow(QMainWindow):
         self.sequence_assign_btn.setVisible(is_seq_or_combo)
         self.sequence_clear_btn.setVisible(is_seq_or_combo)
         self.sequence_apply_btn.setVisible(False)
+        self.scenario_mode_label.setVisible(is_scenario_mode)
+        self.main_scenario_controls.setVisible(is_scenario_mode)
+        self.main_scenario_summary.setVisible(is_scenario_mode)
         self.coordinate_points_label.setVisible(is_coordinate_mode)
         self.coordinate_record_button.setVisible(is_coordinate_mode)
         self.coordinate_clear_button.setVisible(is_coordinate_mode)
         self.coordinate_smooth_checkbox.setVisible(is_coordinate_mode)
         self.coordinate_movement_group.setVisible(is_coordinate_mode)
+        self.random_interval.setVisible(True)
+        self.click_limit_checkbox.setVisible(not is_scenario_mode)
+        self.click_limit_edit.setVisible(not is_scenario_mode)
+        self.click_limit_suffix.setVisible(not is_scenario_mode)
+        self.scenario_run_limit_checkbox.setVisible(is_scenario_mode)
+        self.scenario_run_limit_edit.setVisible(is_scenario_mode)
+        self.scenario_run_limit_suffix.setVisible(is_scenario_mode)
+        self.duration_limit_checkbox.setVisible(True)
+        self.duration_limit_edit.setVisible(True)
+        self.duration_limit_suffix.setVisible(True)
+        self.limits_hint_label.setVisible(True)
         self.update_random_interval_ui()
         self.update_coordinate_move_ui()
         if self.current_mode == self.MODE_COMBO:
@@ -6026,6 +8373,7 @@ class MainWindow(QMainWindow):
             "between": 0.2,
             "key": "SPACE",
             "coordinates": [],
+            "scenario": [],
             "coordinate_smooth": False,
             "coordinate_move_duration": 0.3,
             "coordinate_random_move_duration": False,
@@ -6042,6 +8390,7 @@ class MainWindow(QMainWindow):
                 self.MODE_COMBO,
                 self.MODE_SEQUENCE,
                 self.MODE_COORDINATES,
+                self.MODE_SCENARIO,
             ]
             new_p.update({
                 "mode": mode_names[self.mode.currentIndex()],
@@ -6056,6 +8405,7 @@ class MainWindow(QMainWindow):
                 ),
                 "sequence": self.sequence_edit.toPlainText(),
                 "coordinates": deepcopy(self.coordinate_points),
+                "scenario": deepcopy(self.scenario_actions),
                 "coordinate_smooth": (
                     self.coordinate_smooth_checkbox.isChecked()
                 ),
@@ -6153,13 +8503,16 @@ class MainWindow(QMainWindow):
             self.MODE_SEQUENCE: self.MODE_SEQUENCE,
             self.MODE_COMBO: self.MODE_COMBO,
             self.MODE_COORDINATES: self.MODE_COORDINATES,
+            self.MODE_SCENARIO: self.MODE_SCENARIO,
             self.tr('mode_instant'): self.MODE_INSTANT,
             self.tr('mode_hold'): self.MODE_HOLD,
             self.tr('mode_sequence'): self.MODE_SEQUENCE,
             self.tr('mode_combo'): self.MODE_COMBO,
             self.tr('mode_coordinates'): self.MODE_COORDINATES,
+            self.tr('mode_scenario'): self.MODE_SCENARIO,
             "Обычный клик": self.MODE_INSTANT,
             "Coordinate clicks": self.MODE_COORDINATES,
+            "Recorded scenario": self.MODE_SCENARIO,
         }
         mode_key = mode_aliases.get(m_str, m_str)
         for i in range(self.mode.count()):
@@ -6173,6 +8526,8 @@ class MainWindow(QMainWindow):
         self.coordinate_points = deepcopy(
             profile.get("coordinates", [])
         )
+        self.scenario_actions = deepcopy(profile.get("scenario", []))
+        self._refresh_main_scenario_summary()
         self._refresh_coordinate_points_label()
         self.coordinate_smooth_checkbox.setChecked(
             profile.get("coordinate_smooth", False)
@@ -6311,6 +8666,66 @@ class MainWindow(QMainWindow):
                 "#ff6873",
             )
 
+    def load_standalone_scenario(self):
+        if not SCENARIO_FILE.exists():
+            return []
+        try:
+            with SCENARIO_FILE.open("r", encoding="utf-8") as file:
+                data = json.load(file)
+            if (
+                not isinstance(data, dict)
+                or data.get("format") != "lim0n4ikz-clicker-scenario"
+                or type(data.get("version")) is not int
+                or data.get("version") != 1
+            ):
+                raise ValueError("Unsupported standalone scenario format")
+            return self._normalize_scenario_actions(data.get("actions"))
+        except (OSError, TypeError, ValueError) as error:
+            logging.getLogger(__name__).warning(
+                "Could not load standalone scenario from %s: %s",
+                SCENARIO_FILE,
+                error,
+            )
+            return []
+
+    def save_standalone_scenario(self):
+        temp_file = SCENARIO_FILE.with_suffix(".tmp")
+        try:
+            actions = self._normalize_scenario_actions(
+                self.standalone_scenario_actions
+            )
+            SCENARIO_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with temp_file.open("w", encoding="utf-8") as file:
+                json.dump(
+                    {
+                        "format": "lim0n4ikz-clicker-scenario",
+                        "version": 1,
+                        "actions": actions,
+                    },
+                    file,
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                file.flush()
+                os.fsync(file.fileno())
+            os.replace(temp_file, SCENARIO_FILE)
+            return True
+        except (OSError, TypeError, ValueError):
+            try:
+                if temp_file.exists():
+                    temp_file.unlink()
+            except OSError:
+                pass
+            logging.getLogger(__name__).exception(
+                "Could not save standalone scenario to %s",
+                SCENARIO_FILE,
+            )
+            self._set_status(
+                self.tr("scenario_save_error"),
+                "#ff6873",
+            )
+            return False
+
     def save_settings(self):
         temp_file = SETTINGS_FILE.with_suffix(".tmp")
         try:
@@ -6329,8 +8744,30 @@ class MainWindow(QMainWindow):
             )
             if not 1 <= click_limit <= 999999999:
                 click_limit = 100
+            scenario_run_limit_text = (
+                self.scenario_run_limit_edit.text().strip()
+            )
+            scenario_run_limit = (
+                int(scenario_run_limit_text)
+                if scenario_run_limit_text.isdecimal()
+                else 1
+            )
+            if not 1 <= scenario_run_limit <= 999999999:
+                scenario_run_limit = 1
+            duration_limit_text = (
+                self.duration_limit_edit.text().strip()
+            )
+            duration_limit = (
+                int(duration_limit_text)
+                if duration_limit_text.isdecimal()
+                else 30
+            )
+            if not 1 <= duration_limit <= 999999999:
+                duration_limit = 30
             data = {
-                "settings_version": 8,
+                "settings_version": 12,
+                "tutorial_offer_version": self._tutorial_offer_version,
+                "tutorial_offer_dismissed": self._tutorial_offer_dismissed,
                 "window": {"width": self.width(), "height": self.height()},
                 "mode_idx": self.mode.currentIndex(),
                 "min_int": self._interval_value(self.min_interval_edit),
@@ -6383,6 +8820,14 @@ class MainWindow(QMainWindow):
                     self.click_limit_checkbox.isChecked()
                 ),
                 "click_limit": click_limit,
+                "scenario_run_limit_enabled": (
+                    self.scenario_run_limit_checkbox.isChecked()
+                ),
+                "scenario_run_limit": scenario_run_limit,
+                "duration_limit_enabled": (
+                    self.duration_limit_checkbox.isChecked()
+                ),
+                "duration_limit_minutes": duration_limit,
                 "lang": self.language,
                 "theme": self.theme,
                 "start_hotkey": start_str,
@@ -6445,7 +8890,20 @@ class MainWindow(QMainWindow):
             with open(settings_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
             legacy_settings = data.get("settings_version", 1) < 3
-            settings_upgrade = data.get("settings_version", 1) < 8
+            settings_upgrade = data.get("settings_version", 1) < 12
+            tutorial_offer_version = data.get("tutorial_offer_version")
+            self._tutorial_offer_version = (
+                tutorial_offer_version
+                if isinstance(tutorial_offer_version, str)
+                else None
+            )
+            self._tutorial_offer_dismissed = (
+                data.get("tutorial_offer_dismissed") is True
+            )
+            self._tutorial_prompt_pending = (
+                not self._tutorial_offer_dismissed
+                and self._tutorial_offer_version != APP_VERSION
+            )
             if legacy_settings:
                 data = {
                     "window": {"width": 1200, "height": 780},
@@ -6501,6 +8959,63 @@ class MainWindow(QMainWindow):
                 )
             self.click_limit_edit.setText(str(click_limit))
             self.click_limit_edit.setEnabled(click_limit_enabled)
+            scenario_run_limit_enabled = data.get(
+                "scenario_run_limit_enabled",
+                False,
+            )
+            if not isinstance(scenario_run_limit_enabled, bool):
+                scenario_run_limit_enabled = False
+            scenario_run_limit = data.get("scenario_run_limit", 1)
+            if (
+                isinstance(scenario_run_limit, bool)
+                or not isinstance(scenario_run_limit, int)
+                or not 1 <= scenario_run_limit <= 999999999
+            ):
+                scenario_run_limit = 1
+            duration_limit_enabled = data.get(
+                "duration_limit_enabled",
+                data.get("scenario_duration_limit_enabled", False),
+            )
+            if not isinstance(duration_limit_enabled, bool):
+                duration_limit_enabled = False
+            duration_limit = data.get(
+                "duration_limit_minutes",
+                data.get("scenario_duration_limit_minutes", 30),
+            )
+            if (
+                isinstance(duration_limit, bool)
+                or not isinstance(duration_limit, int)
+                or not 1 <= duration_limit <= 999999999
+            ):
+                duration_limit = 30
+            run_limit_signals_blocked = (
+                self.scenario_run_limit_checkbox.blockSignals(True)
+            )
+            time_limit_signals_blocked = (
+                self.duration_limit_checkbox.blockSignals(True)
+            )
+            try:
+                self.scenario_run_limit_checkbox.setChecked(
+                    scenario_run_limit_enabled
+                )
+                self.duration_limit_checkbox.setChecked(
+                    duration_limit_enabled
+                )
+            finally:
+                self.scenario_run_limit_checkbox.blockSignals(
+                    run_limit_signals_blocked
+                )
+                self.duration_limit_checkbox.blockSignals(
+                    time_limit_signals_blocked
+                )
+            self.scenario_run_limit_edit.setText(str(scenario_run_limit))
+            self.scenario_run_limit_edit.setEnabled(
+                scenario_run_limit_enabled
+            )
+            self.duration_limit_edit.setText(str(duration_limit))
+            self.duration_limit_edit.setEnabled(
+                duration_limit_enabled
+            )
             if "window" in data:
                 self.resize(data["window"]["width"], data["window"]["height"])
             self.mode.setCurrentIndex(data.get("mode_idx", 0))
@@ -6687,6 +9202,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self.hotkeys_enabled = False
+        self._cancel_scenario_recording()
         QApplication.instance().removeEventFilter(self)
         self.stop_clicker()
         if self.keyboard_listener:

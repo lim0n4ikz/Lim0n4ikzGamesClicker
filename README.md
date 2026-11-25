@@ -1,6 +1,8 @@
 # 🍋 Lim0n4ikzGames Clicker
 
-**Lim0n4ikzGames Clicker** is an automatic clicker for Windows with support for keyboard keys, mouse buttons, sequences, key combinations, and coordinate-based clicks.
+<p align="right">🇬🇧 <strong>English</strong> · <a href="README.ru.md">🇷🇺 Русский</a></p>
+
+**Lim0n4ikzGames Clicker** is an automatic clicker for Windows with support for keyboard keys, mouse buttons, sequences, key combinations, coordinate-based clicks, and scenario recording.
 
 The application allows you to automate repetitive actions using customizable intervals, hotkeys, and profiles.
 
@@ -17,8 +19,10 @@ The application allows you to automate repetitive actions using customizable int
 * 🔒 Key hold mode
 * ⚡ Instant press mode
 * 📍 Repeatable coordinate-click sequences
+* 🎬 Record and replay scenarios with keyboard and mouse actions
 * 📊 Click counter, current and per-run average CPS; the average stays visible after stopping
 * 🎯 Automatically stop after a specified number of clicks
+* ⏱️ Run-time limit available in every mode
 * 🎮 Start and stop hotkeys
 * 💾 Automatic settings saving
 * 📋 Custom user profiles
@@ -38,7 +42,7 @@ The application allows you to automate repetitive actions using customizable int
 
 ## 🎮 Operation Modes
 
-The application supports five operation modes.
+The application supports six operation modes. Any mode can be set to stop after a chosen number of minutes. Scenario mode also supports a limit on complete runs; if multiple limits are enabled, the first one reached stops the clicker.
 
 ### 1. 🔒 Hold Key
 
@@ -123,6 +127,16 @@ Records an ordered sequence of clicks and swipes on a selected monitor. Click th
 
 ---
 
+### 6. 🎬 Recorded Scenario
+
+Choose **Recorded Scenario** in the main window and use **Record scenario** or **Edit scenario** directly in that mode. Recording is also available in the profile editor when you want to keep a scenario with a profile. Press the Start hotkey (default `F6`) to begin capturing, then the Stop hotkey (`F7`) to finish. The recording includes key presses and releases, mouse clicks and holds, cursor movement and drags, wheel scrolling, and the original delays between actions. A standalone scenario is saved in `scenario.json`; profile scenarios stay with their profiles. After each run, the scenario repeats using a fixed or random interval. Scenario mode also supports a limit on complete runs; the general time limit is available in every mode.
+
+Click **Edit scenario** to open the editor. Select an action to change its type, key or button, coordinates, and delay; add, delete, or reorder actions. The scenario-mode tutorial is available through **Show tutorial** in Settings.
+
+> **Important:** Recording captures input across all applications, including typed text. Do not record passwords or sensitive information.
+
+---
+
 ## ⌨️ Hotkeys
 
 The default hotkeys are:
@@ -201,11 +215,14 @@ Main files:
 ```text
 settings.json
 profiles.json
+scenario.json
 ```
 
 `settings.json` contains application settings.
 
 `profiles.json` contains saved profiles.
+
+`scenario.json` stores the standalone scenario created in the main mode.
 
 Settings and profiles are automatically saved when the application is closed.
 
@@ -254,9 +271,9 @@ On startup, the application checks [`versions.json`](https://github.com/lim0n4ik
 
 To publish an update:
 
-1. Bump `APP_VERSION` in `main.py` and `MyAppVersion` in `Lim0n4ikzGamesClicker.iss` for the next release.
-2. Update `latest_version` and the installer URL in `versions.json`.
-3. Add the new version to `releases`, including `changes.ru` and `changes.en`. Keep previous release entries so users on older versions can see the full changelog.
+1. Set the same release number in `APP_VERSION` in `main.py`, `MyAppVersion` in `Lim0n4ikzGamesClicker.iss`, `latest_version`, and the new release's `version` field in `versions.json`.
+2. Set the installer URL in `versions.json`.
+3. Add a `releases` entry with `changes.ru`, `changes.en`, `telegram_post.features`, and `telegram_post.fixes`. Put every Russian change in exactly one Telegram category. Keep previous release entries so users on older versions can see the full changelog.
 4. Publish the installer on GitHub Releases at the URL specified by `download_url`.
 
 ---
@@ -269,7 +286,9 @@ Click the magnifying-glass icon next to the profile list heading and enter a nam
 
 ## 🎨 Application settings
 
-Settings let you choose the dark, turquoise, purple, green, orange, gray, blue, red, or pink theme. Settings also include a manual update check, a “Report a bug (Bug-report)” button that opens the [feedback form](https://forms.gle/MZvS2rtF4Sae8eAV6), profile import and export, and emergency stop key assignment. The emergency key is always active, even when regular hotkeys are disabled; use a dedicated key such as Pause/Break or F12, not the start key or one frequently used in a game. The selected theme, language, and emergency key are saved between launches. Developer information and Discord are shown at the bottom.
+On the first launch, and after an update for existing users, the application offers an interactive tutorial. Choose **Later** or close the offer with the window's X to see it again next time; choose **Don't show again** to dismiss it permanently, including after future updates. The tutorial remains available anytime through **Show tutorial** in Settings; choose one mode or **Show all modes**. The tutorial explains keys and mouse buttons, timing, limits, and hotkeys; for Coordinate Clicks it covers recording points and swipes, and for scenarios it covers capture, editing, repeats, and saving. It highlights the relevant controls without running any actions.
+
+Settings also let you choose the dark, turquoise, purple, green, orange, gray, blue, red, or pink theme. The run-time limit is configured in the main window's parameters and applies to every mode. Settings include a manual update check, a “Report a bug (Bug-report)” button that opens the [feedback form](https://forms.gle/MZvS2rtF4Sae8eAV6), profile import and export, and emergency stop key assignment. The emergency key is always active, even when regular hotkeys are disabled; use a dedicated key such as Pause/Break or F12, not the start key or one frequently used in a game. The selected theme, language, and emergency key are saved between launches. Developer information and Discord are shown at the bottom.
 
 ---
 
@@ -279,7 +298,7 @@ If you want to build the application yourself, you can use PyInstaller.
 
 ## 🧪 Safe test launch
 
-Run `run_test.bat` from the project folder. It uses the current source code and stores test settings and profiles separately in `%LOCALAPPDATA%\Lim0n4ikzGamesClicker-Test`. On first launch, the test copy reads the project's existing settings and profiles, but subsequent changes are saved only to the test folder. The original `settings.json` and `profiles.json` are not modified.
+Run `run_test.bat` from the project folder. It uses the current source code and stores test settings, profiles, and standalone scenarios separately in `%LOCALAPPDATA%\Lim0n4ikzGamesClicker-Test`. On first launch, the test copy reads the project's existing settings and profiles, but subsequent changes are saved only to the test folder. The original `settings.json`, `profiles.json`, and `scenario.json` are not modified.
 
 This tests the source application, not the installer. To safely test an installer, use a separate Windows account.
 
@@ -298,6 +317,16 @@ Install the dependencies using:
 ```cmd
 pip install PySide6 pynput pyinstaller
 ```
+
+## Telegram Release Post
+
+Run this from the project folder. In the window, select a version, optionally edit the text, and click **Copy finished post** or use `Ctrl+Shift+C`:
+
+```cmd
+python generate_telegram_post.py
+```
+
+For command-line mode, specify a version directly, for example `python generate_telegram_post.py --version 2.1`; the post is copied to the clipboard. Use `--no-clipboard` to print the text in the terminal. Every release in `versions.json` has `telegram_post.features` and `telegram_post.fixes` categories; when adding a release, assign all `changes.ru` entries to them.
 
 ---
 
@@ -363,6 +392,7 @@ Lim0n4ikzGamesClicker/
 │
 ├── settings.json
 ├── profiles.json
+├── scenario.json
 │
 └── source files
 ```
